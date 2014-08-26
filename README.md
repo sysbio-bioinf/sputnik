@@ -7,8 +7,6 @@ Sputnik does not only handle the distribution and execution of tasks but also th
 <img src="doc/images/scenario.png" alt="Distributed computation scenario of Sputnik" title="Distributed computation scenario of Sputnik" align="center" />
 <br>
 Distributed computation scenario of Sputnik.
-<br>
-(Image: Copyright © 2014 Gunnar Völkel. All rights reserved.)
 </p>
 
 
@@ -36,6 +34,10 @@ Distributed computation scenario of Sputnik.
 The core library has been used in internal projects for more than a year running parallel experiments lasting from several hours to multiple days.
 The graphical user interface for configuration of the Sputnik nodes and deployment is rather new.
 
+## Releases
+
+The latest release is [Sputnik 0.3.1](https://github.com/guv/sputnik/releases/tag/v0.3.1).
+
 ## Install
 
 For [Leiningen](http://leiningen.org) add the following to your dependency vector in your project.clj:
@@ -59,8 +61,8 @@ TODO Bildlink einfügen
 
 The Sputnik project provides two example applications.
 
-* [Simple example](example-application/simple-example): A simple example application that computes an estimation of *pi*.
-* [Feature selection](example-application/feature-selection): A feature selection for a classifier using a genetic algorithm. 
+* [Simple example](example-applications/simple-example): A simple example application that computes an estimation of *pi*.
+* [Feature selection](example-applications/feature-selection): A feature selection for a classifier using a genetic algorithm. 
 
 ## License
 

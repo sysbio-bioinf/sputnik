@@ -10,8 +10,6 @@ For the deployment of all needed files Sputnik uses [SSH](http://en.wikipedia.or
 <img src="images/scenario.png" alt="Distributed computation scenario of Sputnik" title="Distributed computation scenario of Sputnik" align="center" />
 <br>
 Distributed computation scenario of Sputnik.
-<br>
-(Image: Copyright © 2014 Gunnar Völkel. All rights reserved.)
 </p>
 
 The graphical user interface for the configuration of Sputnik can be started with the following command.

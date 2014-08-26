@@ -11,7 +11,7 @@
 (defproject sputnik version
   :min-lein-version "2.0.0"
   :description "Sputnik is a Clojure library for parallelization of computations to distributed computation nodes. Sputnik does not only handle the distribution and execution of tasks but also the configuration and deployment of the server and the workers."
-  :url "https://github.com/guv/sputnik/"
+  :url "https://github.com/sysbio-bioinf/sputnik/"
   :license {:name "Eclipse Public License - v 1.0"
             :url "http://www.eclipse.org/legal/epl-v10.html"
             :distribution :repo}
@@ -53,10 +53,7 @@
   
   :repositories ^:replace
   {"sonatype-snapshots" "https://oss.sonatype.org/content/repositories/snapshots",
-   "sonatype" "https://oss.sonatype.org/content/repositories/releases/",
-   "releases" {:url "https://archiva.frontlinecoders.de/archiva/repository/internal"
-                                        :signing {:gpg-key "D9E0A4CF"}},
-   "snapshots" "https://archiva.frontlinecoders.de/archiva/repository/snapshots"}
+   "sonatype" "https://oss.sonatype.org/content/repositories/releases/"}
   
 ;  :repl-options
 ;  {:init (do

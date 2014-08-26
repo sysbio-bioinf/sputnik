@@ -20,9 +20,4 @@
   :jvm-opts ^:replace []
   
   :jar-name ~(format "feature-selection-lib-%s.jar" version)
-  :uberjar-name ~(format "feature-selection-%s.jar" version)
-  
-  :repositories ^:replace
-  {"releases" {:url "https://archiva.frontlinecoders.de/archiva/repository/internal"
-               :signing {:gpg-key "D9E0A4CF"}},
-   "snapshots" "https://archiva.frontlinecoders.de/archiva/repository/snapshots"})
+  :uberjar-name ~(format "feature-selection-%s.jar" version))
