@@ -48,7 +48,7 @@ For [Leiningen](http://leiningen.org) add the following to your dependency vecto
 
 Latest on [clojars.org](http://clojars.org):
 
-TODO Bildlink einfügen
+[![Clojars Project](http://clojars.org/sputnik/latest-version.svg)](http://clojars.org/sputnik)
 
 ## Documentation
 
