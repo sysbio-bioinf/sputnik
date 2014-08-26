@@ -59,8 +59,8 @@ TODO Bildlink einfügen
 
 The Sputnik project provides two example applications.
 
-* [Simple example](example-application/simple-example): A simple example application that computes an estimation of *pi*.
-* [Feature selection](example-application/feature-selection): A feature selection for a classifier using a genetic algorithm. 
+* [Simple example](example-applications/simple-example): A simple example application that computes an estimation of *pi*.
+* [Feature selection](example-applications/feature-selection): A feature selection for a classifier using a genetic algorithm. 
 
 ## License
 
