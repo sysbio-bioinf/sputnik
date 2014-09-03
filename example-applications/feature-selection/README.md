@@ -70,7 +70,7 @@ This section describes how the experiments in the paper were run (TODO: add pape
 
 ### Runtime Experiments
 
-The runtime experiments were started as follows: (TODO: datasets and folds under directory "data"?)
+The runtime experiments were started as follows:
 ```bash
 $ java -jar feature-selection-1.0.0.jar run data/west.csv --folds data/west_folds.txt \
 --one-probability 0.01 --flip-one-probability 0.5 --flip-zero-probability 0.5 --crossover-probability 0.01 \
@@ -82,6 +82,8 @@ Replace ```<PATH/TO/client.cfg>``` with the actual path to your client configura
 ```bash
 $ java -jar feature-selection-1.0.0.jar setup
 ```
+The datasets that were used in our experiments are available in the [data](data/) folder.
+
 
 ### Feature Selection Experiments
 
@@ -94,6 +96,7 @@ $ java -jar feature-selection-1.0.0.jar run data/<DATASET>.csv --folds data/<DAT
 --progress --quiet --export-data <DATASET>.data
 ```
 Where ```<DATASET>``` is one of: ```armstrong```, ```golub```, ```SHIPP2002_rma```, ```west```.
+The datasets are available in the [data](data/) folder.
 
 ## License
 
