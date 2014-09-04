@@ -36,7 +36,7 @@ The graphical user interface for configuration of the Sputnik nodes and deployme
 
 ## Releases
 
-The latest release is [Sputnik 0.3.1](https://github.com/guv/sputnik/releases/tag/v0.3.1).
+The latest release is [Sputnik 0.3.1](../../releases/tag/v0.3.1).
 
 ## Install
 

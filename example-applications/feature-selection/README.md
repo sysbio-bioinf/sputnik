@@ -10,7 +10,7 @@ The evaluation of each population is parallelized among the available workers of
 
 ## Download
 
-The runnable feature selection program can be downloaded from [here](../../releases/download/v0.3.1/feature-selection-1.0.0.jar).
+The runnable feature selection program can be downloaded from [here](../../../../releases/download/v0.3.1/feature-selection-1.0.0.jar).
 
 
 ## Build

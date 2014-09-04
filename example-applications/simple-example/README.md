@@ -10,7 +10,7 @@ The algorithm uses T tasks where each task draws P points. The T tasks can be co
 
 ## Download & Run
 
-The program can be downloaded from [here](../../releases/download/v0.3.1/simple-example-0.1.0.jar).
+The program can be downloaded from [here](../../../../releases/download/v0.3.1/simple-example-0.1.0.jar).
 
 The application can be run by just specifying a Sputnik client configuration, e.g. ```client.cfg``` as below.
 ```bash
