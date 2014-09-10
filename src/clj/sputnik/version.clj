@@ -9,7 +9,7 @@
 (ns sputnik.version)
 
 
-(def ^:private version "0.3.1")
+(def ^:private version "0.3.2")
 
 
 (defn sputnik-version [] version)

@@ -42,9 +42,7 @@
    :1.2 {:dependencies [[org.clojure/clojure "1.2.1"]]}
    :1.3 {:dependencies [[org.clojure/clojure "1.3.0"]]}
    :1.4 {:dependencies [[org.clojure/clojure "1.4.0"]]}
-   :reflection {:global-vars {*warn-on-reflection* true}}}
-  
-  :plugins [[org.timmc/lein-otf "2.0.1"]]
+   :reflection {:global-vars {*warn-on-reflection* true}}}  
   
   :aliases 
   {"all" ["with-profile" "dev,1.2:dev,1.3:dev"]
@@ -63,9 +61,9 @@
   :source-paths ["src/clj"]
   :java-source-paths ["src/jvm"]
   :resource-paths ["resources"]
-  
-  ; set main with :skip-aot for lein-otf
-  :main ^:skip-aot sputnik.main
+    
+  :main sputnik.fake-main
+  :aot [sputnik.fake-main]
   
   :jar-name ~(format "sputnik-lib-%s.jar" version)
   :uberjar-name ~(format "sputnik-%s.jar" version))

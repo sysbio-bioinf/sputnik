@@ -1,4 +1,4 @@
-(def version "1.0.0")
+(def version "1.0.1")
 
 (defproject feature-selection version
   :min-lein-version "2.0.0"
@@ -9,7 +9,7 @@
             :distribution :repo}
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [org.clojure/tools.cli "0.3.1"]
-                 [sputnik "0.3.1"]
+                 [sputnik "0.3.2"]
                  #_[pareto "0.1.0"]]
   
   :profiles {:dev {:dependencies [[clj-debug "0.7.3"]]}}
