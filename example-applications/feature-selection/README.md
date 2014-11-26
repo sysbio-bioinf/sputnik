@@ -5,7 +5,7 @@ using a so-called *Merit* measure as fitness function.
 An individual represents a feature combination where the selection state of a gene is encoded as one bit (1 = selected, 0 = not selected).
 The genetic algorithm evaluates those individuals using the Merit measure on 2/3 of the given samples.
 The final population is tested using the 1-NN classifier on the remaining 1/3 of the given samples.
-The evaluation of each population is parallelized among the available workers of the [Sputnik](../../) cluster.
+The evaluation of each population is parallelized among the available workers of the [Sputnik](/README.md) cluster.
 
 
 ## Download

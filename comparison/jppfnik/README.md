@@ -1,7 +1,7 @@
 # Comparison Sputnik vs. JPPF
 
-The projects in this folder where resurrected for comparing [Sputnik](../../) with [JPPF](http://www.jppf.org) using the feature selection application.
-**The projects in this folder have been an early prototype for [Sputnik](../../) based on [JPPF](http://www.jppf.org).
+The projects in this folder where resurrected for comparing [Sputnik](/README.md) with [JPPF](http://www.jppf.org) using the feature selection application.
+**The projects in this folder have been an early prototype for [Sputnik](/README.md) based on [JPPF](http://www.jppf.org).
 It is not recommended to use them for anything else apart from the experiment comparing the runtimes of the feature selection application using Sputnik and JPPF.**
 
 
