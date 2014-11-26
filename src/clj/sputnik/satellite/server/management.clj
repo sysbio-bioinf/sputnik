@@ -9,8 +9,10 @@
 (ns sputnik.satellite.server.management
   (:require
     [clojure.set :as set]
+    [clojure.options :refer [defn+opts]]
     [frost.quick-freeze :as qf]
-    [sputnik.satellite.protocol :as protocol]))
+    [sputnik.satellite.protocol :as protocol]
+    [sputnik.satellite.server.performance-data :as pd]))
 
 
 (deftype TaskDuration [^long start, ^long end, ^long duration, ^double efficiency, ^long threadid])
@@ -19,6 +21,7 @@
 (defn task-duration->map
   [^TaskDuration td]
   {:start (.start td), :end (.end td), :duration (.duration td), :efficiency (.efficiency td), :thread-id (.threadid td)})
+
 
 
 (defprotocol IManagement
@@ -35,7 +38,9 @@
   (task-assignment-map [this])
   (unfinished-task-map [this])
   (rated-workers [this, rating-period, connected-only?])
-  (client-data-map [this])
+  (job-performance-data-map [this, rating-period])
+  (rating-period-map [this])
+  (client-data-map [this])  
   (worker+finished-tasks [this, finished-tasks])
   (remove-finished-job-data [this])
   (worker-task-durations [this]))
@@ -181,15 +186,13 @@
 
 ; TODO: use cond->
 (defn- update-job
-  [job-data, task-id, task-duration, exception, exception-scope, duplicate?]
-  (let [job-data (if duplicate?
+  [job-data, task-id, exception-data-list, exception-scope, duplicate?]
+  (let [some-exception? (seq exception-data-list),
+        job-data (if duplicate?
                    job-data
                    (update-in job-data [:finished-task-count] inc)),
-        job-data (if (or duplicate? (nil? task-duration))
-                   job-data
-                   (update-in job-data [:durations] conj task-duration)),
-        job-data (if exception
-                   (update-in job-data [:exceptions] conj [task-id exception, exception-scope])
+        job-data (if some-exception?
+                   (update-in job-data [:exceptions] into exception-data-list)
                    job-data)]
     (if (== (:task-count job-data) (:finished-task-count job-data))
       (assoc job-data :finished true)
@@ -203,26 +206,45 @@
       (TaskDuration. (long start-time), (long end-time), (long duration), (/ (double cpu-time) duration), thread-id))))
 
 
+(defn extract-exception-data
+  [result-data]
+  (keep
+    (fn [{{:keys [exception, exception-scope]} :execution-data, {:keys [task-id]} :task-data}]
+      (when exception
+        [task-id, exception, exception-scope]))
+    (:failed-tasks result-data)))
+
+
 (defn- task-finished*
-  [client-job-data-map, unfinished-task-map, worker-task-data-map, task-assignment-map,
-   {:keys [client-id, job-id, task-id] :as task-key}, worker-id, {:keys [exception, exception-scope, duplicate?] :as task-result}]
-  (let [#_task-key #_(protocol/create-task-key task-data),
-        task-duration (determine-task-duration task-result)]
-    (dosync
-	    (let [duplicate? (or (nil? (get @unfinished-task-map task-key)) duplicate?)]
-        ; mark task as finished
-        (alter unfinished-task-map dissoc task-key)
-        ; update job data
-        (alter client-job-data-map update-in [client-id, :jobs, job-id] update-job task-id, task-duration, exception, exception-scope, duplicate?)
-        ; remove assignment from worker data
-        (alter worker-task-data-map update-in [worker-id] #(let [worker-data (update-in % [:assigned-tasks] dissoc task-key)] 
-                                                             (if (nil? task-duration)
-                                                               worker-data
-                                                               (update-in worker-data [:durations] conj task-duration))))        
-        ; remove assignment from task-data
-        (alter task-assignment-map #(remove-task-assignment-of-worker worker-id, %, task-key))
-        ; return whether the task was NOT a duplicate
-        (not duplicate?)))))
+  [client-job-data-map, unfinished-task-map, worker-task-data-map, task-assignment-map, worker-performance-data, job-performance-data,
+   {:keys [client-id, job-id, task-id] :as task-key},
+   worker-id,
+   {:keys [start-time, end-time, cpu-time exception, exception-scope, duplicate?, result-data] :as task-result}]
+  (let [exception-data-list (cond->> (extract-exception-data result-data)
+                              exception
+                              (list* [task-id, exception, exception-scope]))
+        task-duration (determine-task-duration task-result),
+        not-duplicate? (dosync
+                         (let [duplicate? (or (nil? (get @unfinished-task-map task-key)) duplicate?)]
+                           ; mark task as finished
+                           (alter unfinished-task-map dissoc task-key)
+                           ; update job data
+                           (alter client-job-data-map update-in [client-id, :jobs, job-id] update-job task-id, exception-data-list, exception-scope, duplicate?)
+                           ; remove assignment from worker data
+                           (alter worker-task-data-map update-in [worker-id] #(update-in % [:assigned-tasks] dissoc task-key))        
+                           ; remove assignment from task-data
+                           (alter task-assignment-map #(remove-task-assignment-of-worker worker-id, %, task-key))
+                           ; return whether the task was NOT a duplicate
+                           (not duplicate?)))]
+    ; new performance data management
+    (when (and start-time end-time (or (nil? exception) (= exception-scope :task)))
+      ; duplicate tasks determine worker performance as well
+      (pd/add-task-data-for worker-performance-data, worker-id, start-time, end-time, cpu-time)
+      ; only the first calculation of a tasks contributes to job performance
+      (when not-duplicate?
+        (pd/add-task-data-for job-performance-data, [client-id, job-id], start-time, end-time, cpu-time)))
+    ; return whether this task was not a duplicate
+    not-duplicate?))
 
 
 (defn duration-in-interval
@@ -269,69 +291,38 @@
                  :cputime-sum cputime-sum,
                  :avg-parallelism (/ cputime-sum (- e b))}))))))))
 
-(defn- rated-workers*
-  [worker-task-data-map, rating-period, connected-only?]
+
+(defn- select-workers
+  [worker-task-data-map, connected-only?]
   (dosync
-    (let [period-end (System/currentTimeMillis)
-          period-begin (- period-end rating-period)]
-	    (with-meta
-        (->> worker-task-data-map
-          deref
-			    (reduce-kv
-				    (fn [result, worker-id, {:keys [assigned-tasks, durations, connected, disconnect-time, thread-count, worker-info]}]
-				      (if (or (not connected-only?) connected)
-				        (let [{:keys [avg-concurrency, avg-duration, task-completion, avg-computation-speed, avg-efficiency, tasks-in-interval, 
-                              cputime-sum, avg-parallelism, interval-begin, interval-end]}
-                        (computation-statistics durations),
-                      {avg-concurrency-period :avg-concurrency, avg-duration-period :avg-duration,
-                       task-completion-period :task-completion, avg-computation-speed-period :avg-computation-speed,
-                       avg-efficiency-period  :avg-efficiency,  tasks-in-interval-period :tasks-in-interval,
-                       cputime-sum-period     :cputime-sum,     avg-parallelism-period :avg-parallelism}
-                        (computation-statistics durations, period-begin, period-end)]
-                  (conj! result
-			              {:worker-id worker-id,
-	                   :worker-info worker-info,
-		                 :thread-count thread-count,
-			               :assigned-task-count (count assigned-tasks),
-                     :assigned-tasks assigned-tasks,
-		                 :avg-concurrency 
-                      avg-concurrency,
-                     :avg-duration
-                      avg-duration,
-                     :task-completion
-                      task-completion,
-                     :avg-efficiency
-                      avg-efficiency,
-                     :tasks-in-interval
-                      tasks-in-interval,
-                     :cputime-sum
-                      cputime-sum,
-                     :avg-parallelism
-                      avg-parallelism,
-                     :avg-computation-speed
-                      avg-computation-speed,
-		                 :avg-concurrency-period
-                      avg-concurrency-period,
-                     :avg-duration-period
-                      avg-duration-period,
-                     :task-completion-period
-                      task-completion-period,
-                     :avg-efficiency-period
-                      avg-efficiency-period,
-                     :tasks-in-interval-period
-                      tasks-in-interval-period,
-                     :cputime-sum-period
-                      cputime-sum-period,
-                     :avg-parallelism-period
-                      avg-parallelism-period,
-	                   :avg-computation-speed-period
-                      avg-computation-speed-period,
-		                 :connected connected,
-	                   :disconnect-time disconnect-time}))
-				        result))
-				    (transient []))
-			    persistent!)
-        {:rating-period rating-period}))))
+    (->> worker-task-data-map
+      deref
+      (reduce-kv
+        (fn [result, worker-id, {:keys [connected] :as worker-data}]
+          (cond-> result
+            (or (not connected-only?) connected)
+            (conj! (assoc worker-data :worker-id worker-id))))
+        (transient []))
+      persistent!)))
+
+
+(defn- rated-workers*
+  [worker-task-data-map, worker-performance-data, ^long rating-period, connected-only?]
+  (mapv
+    (fn [{:keys [worker-id, assigned-tasks] :as worker-data}]
+      ; both :assigned-tasks and :assigned-task-count is needed in scheduling
+      (assoc worker-data
+        :assigned-task-count (count assigned-tasks),
+        :selected-period-performance-data (pd/period-computation-performance-of worker-performance-data, worker-id, rating-period)
+        :maximal-period-performance-data  (pd/period-computation-performance-of worker-performance-data, worker-id)
+        :total-performance-data           (pd/total-computation-performance-of  worker-performance-data, worker-id)))
+    (select-workers worker-task-data-map, connected-only?)))
+
+
+(defn- job-performance-data-map*
+  [job-performance-data, ^long rating-period]
+  {:period-computation-performance-map (pd/period-computation-performance-map job-performance-data, rating-period)
+   :total-computation-performance-map  (pd/total-computation-performance-map  job-performance-data)})
 
 
 (defn- worker+finished-tasks*
@@ -367,7 +358,7 @@
 ;     - key-levels: client-id
 ;     - values: :connected (boolean), :jobs (map, see below)
 ;     - key-levels: client-id, :jobs, job-id
-;     - values: :task-count (integer), :finished-task-count (integer), :durations (vector), :finished (boolean), :exceptions (vector of vectors: [task-id exception])
+;     - values: :task-count (integer), :finished-task-count (integer), :finished (boolean), :exceptions (vector of vectors: [task-id exception])
 ;
 ;  * unfinished-task-map
 ;     - type: (ref {})
@@ -381,13 +372,24 @@
 ;  * worker-task-data-map
 ;     - type: (ref {})
 ;     - keys: worker-id
-;     - values: :assigned-tasks (map of task-key -> timestamp of assignment), :durations (vector), :connected (boolean)
+;     - values: :worker-info (string) :assigned-tasks (map of task-key -> timestamp of assignment), :connected (boolean), :disconnect-time (timestamp), :thread-count (integer)
 ;
 ;  * task-assignment-map
 ;     - type: (ref {})
 ;     - keys: task-key (= {:client-id #, :job-id #, :task-id #})
 ;     - values: assigned workers (map of worker-id -> timestamp of assignment)
-(deftype WorkerJobManager [client-job-data-map, unfinished-task-map, unassigned-task-queue, worker-task-data-map, task-assignment-map]  
+; 
+;  * worker-performance-data
+;     - type: ConcurrentHashMap
+;     - keys: worker-id
+;     - values: EntityPerformanceData
+;
+;  * job-performance-data
+;     - type: ConcurrentHashMap
+;     - keys: [client-id, job-id]
+;     - values: EntityPerformanceData
+;
+(deftype WorkerJobManager [client-job-data-map, unfinished-task-map, unassigned-task-queue, worker-task-data-map, task-assignment-map, worker-performance-data, job-performance-data]  
   IManagement
   
   (client-connected [this, client-id, client-info]
@@ -418,7 +420,8 @@
   
   (task-finished [this, task-key, worker-id, task-result]
     ; returns whether the task is not a duplicate (i.e. a result to this task was not already received from another worker. occurs when a task-stealing strategy is used.)
-    (task-finished* client-job-data-map, unfinished-task-map, worker-task-data-map, task-assignment-map, task-key, worker-id, task-result))
+    (task-finished* client-job-data-map, unfinished-task-map, worker-task-data-map, task-assignment-map, 
+      worker-performance-data, job-performance-data, task-key, worker-id, task-result))
   
   (unassigned-task-queue [this]
     ; return the ref since it is manipulated from the outside
@@ -431,10 +434,16 @@
     (dosync @unfinished-task-map))
   
   (rated-workers [this, rating-period, connected-only?]
-    (rated-workers* worker-task-data-map, rating-period, connected-only?))
+    (rated-workers* worker-task-data-map, worker-performance-data, rating-period, connected-only?))
   
   (client-data-map [this]
     (dosync @client-job-data-map))
+  
+  (job-performance-data-map [this, rating-period]
+    (job-performance-data-map* job-performance-data, rating-period))
+  
+  (rating-period-map [this]
+    (pd/periods worker-performance-data))
   
   (worker+finished-tasks [this, finished-tasks]
     (worker+finished-tasks* finished-tasks, worker-task-data-map))
@@ -456,9 +465,20 @@
 ;    
 ;          new-val))))
 
-(defn create-worker-job-manager
-  []
-  (WorkerJobManager. (ref {} :min-history 15 :max-history 50), (ref {}), (ref clojure.lang.PersistentQueue/EMPTY), (ref {}), (ref {})))
+(def ^:const five-minutes (* 1000 60 5))
+
+(defn+opts create-worker-job-manager
+  "Create the manager instance for worker data and job data.
+  Worker and job performance data is aggregated in total and for a specified period of time,
+  i.e. the last `interval-count` * `interval-duration` milliseconds.
+  <interval-duration>Interval duration in milliseconds for aggregated performance data of workers and jobs.</>
+  <interval-count>Number of intervalls that are used to aggregate performance data of workers and jobs.</>"
+  [| {interval-duration five-minutes, interval-count 12}]
+  (let [now (System/currentTimeMillis)]
+    (WorkerJobManager.
+      (ref {} :min-history 15 :max-history 50), (ref {}), (ref clojure.lang.PersistentQueue/EMPTY), (ref {}), (ref {}),
+      (pd/create-entity-performance-data interval-duration, interval-count, now),
+      (pd/create-entity-performance-data interval-duration, interval-count, now))))
 
 
 (defn export-worker-task-durations

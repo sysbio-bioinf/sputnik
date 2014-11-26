@@ -27,7 +27,7 @@
   <max-size>Maximum size of the log file in MB</>
   <backup-count>Maximum number of backup files of the log (RollingFileAppender)</>
   <custom-levels>Custom log levels for given classes/namespaces</>"
-  [| {filename "default.log", log-level (choice :info :trace, :debug, :warn, :error, :fatal), max-size 100, backup-count 10, custom-levels {}}]
+  [| {filename "default.log", log-level (choice :info :trace, :debug, :warn, :error, :fatal), max-size 5, backup-count 20, custom-levels {}}]
   (let [log-props (doto (System/getProperties)
                     (.setProperty "log4j.rootLogger" (format "%s, file" (level->string log-level)))
                     (.setProperty "log4j.appender.file" "org.apache.log4j.RollingFileAppender")

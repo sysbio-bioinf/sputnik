@@ -16,7 +16,7 @@
     [sputnik.satellite.node :as node]
     [sputnik.satellite.protocol :as protocol]
     [sputnik.satellite.role-based-messages :as role]
-    [sputnik.satellite.resolve :as r]
+    [sputnik.tools.resolve :as r]
     [sputnik.tools.control-flow :as cf])
   (:import
     (java.util.concurrent ThreadPoolExecutor LinkedBlockingQueue TimeUnit)
@@ -147,6 +147,17 @@
     nil))
 
 
+(defn prepare-task-results
+  [task-results]
+  (mapv
+    (fn [{:keys [finished-task-map]}]
+      (cond-> finished-task-map
+        ; for batches the task-data is include in the individual tasks already (no duplicates!)
+        (protocol/task-batch? (:task-data finished-task-map))        
+        (update-in [:task-data] dissoc :tasks)))
+    task-results))
+
+
 (defn result-sending
   [worker-node, send-result-timeout, max-results-to-send, send-results-parallel]
   (log/debug "Result sending thread has started.")
@@ -161,7 +172,7 @@
             (count task-results), (node/node-info server-node), (str/join ", " (map (comp :task-id :task-data) task-results)))
           (try
             (cf/cond-wrap send-results-parallel, [node/safe-execute worker-node], 
-              (node/send-message server-node (protocol/tasks-completed-message (map #(dissoc % :server-node) task-results))))
+              (node/send-message server-node (protocol/tasks-completed-message (prepare-task-results task-results))))
             (catch Throwable t
 	            (log/errorf "Sending task results to server %s failed!" (node/node-info server-node))
 	            ; TODO: recover somehow? store task-results on disk?
@@ -224,12 +235,19 @@
 
 
 
+(defn finished-task-map
+  ([[task-data, execution-data]]
+    (finished-task-map task-data, execution-data))
+  ([task-data, execution-data]
+    {:task-data task-data, :execution-data execution-data}))
+
+
 (defn task-finished
-  [this-node, remote-node, task-data, execution-data]
+  [this-node, remote-node, {:keys [task-data, execution-data] :as finished-task-map}]
   (try 
     (log/tracef "Task finished with:\n%s" (with-out-str (pprint execution-data)))
     (mark-task-finished! this-node, execution-data)
-    (enqueue-finished-task this-node {:server-node remote-node, :task-data task-data, :execution-data execution-data})
+    (enqueue-finished-task this-node {:server-node remote-node, :finished-task-map finished-task-map})
     (catch Throwable t
       (log/errorf "Exception when enqueueing task \"%s\" of job \"%s\" of client \"%s\".\n%s"
         (:task-id task-data), (:job-id task-data), (:client-id task-data), (with-out-str (print-cause-trace t)))))
@@ -255,39 +273,83 @@
                             data))), 
                       t))))))
 
-(defn execute-task
-  [this-node, remote-node, {:keys [task-id, function, data] :as task}]
-  (->>
+(defn execution
+  [this-node, execute-fn, finished-check?, task-description, {:keys [task-id] :as task}]
+  ; wrap result in the map structure that is send back to server and client
+  (finished-task-map
     (try
-      (log/tracef "Next task:\n%s" (with-out-str (pprint task)))
-      (log/debugf "Execution of task %s of job %s from client %s starts." task-id (:job-id task) (:client-id task))
-		  (if (task-already-finished? this-node, task) 
+      (log/debugf "Execution of %s %s of job %s from client %s starts." task-description task-id (:job-id task) (:client-id task))
+      (log/tracef "%s data:\n%s" task-description (with-out-str (pprint task)))
+      (if (and finished-check? (task-already-finished? this-node, task)) 
         (do
-          (log/debugf "Task %s of job %s from client %s has already been finished by another worker!" task-id (:job-id task) (:client-id task))
+          (log/debugf "%s %s of job %s from client %s has already been finished by another worker!" task-description task-id (:job-id task) (:client-id task))
           [task {:duplicate? true}])
         (let [start-time (System/currentTimeMillis),
-			         start-cpu-time (current-thread-cpu-time-millis),		        
-	             result (resolve+execute function, data),
-		           end-cpu-time (current-thread-cpu-time-millis),
-	             end-time (System/currentTimeMillis)]
-          (log/debugf "Execution of task %s of job %s from client %s finished." task-id (:job-id task) (:client-id task))
-	        [task
-	         (let [execution-data {:start-time start-time,
+              start-cpu-time (current-thread-cpu-time-millis),		        
+              result (execute-fn this-node, task),
+              end-cpu-time (current-thread-cpu-time-millis),
+              end-time (System/currentTimeMillis)]
+          (log/debugf "Execution of %s %s of job %s from client %s finished." task-description task-id (:job-id task) (:client-id task))
+          [task
+           (let [execution-data {:start-time start-time,
                                  :end-time end-time,
                                  :cpu-time (- end-cpu-time start-cpu-time),
                                  :thread-id (.getId (java.lang.Thread/currentThread))}]
              (if (instance? Exception result)
                (let [exception-msg (with-out-str (print-cause-trace result))]
-                 (log/errorf "execute-task failed with the following exception:\n%s" exception-msg)
+                 (log/errorf "execution of %s %s failed with the following exception:\n%s" task-description task-id exception-msg)
                  (assoc execution-data :exception exception-msg :exception-scope :task))
                (assoc execution-data :result-data result)))]))     
-	   (catch Throwable t
-	     (let [msg (with-out-str (println "Task run resulted in an exception:") (print-cause-trace t))]
-        (log/debugf "Execution of task %s of job %s from client %s finished with an exception." task-id (:job-id task) (:client-id task))
-        (log/error msg)
-        [task {:exception msg :exception-scope :worker}])))
-    ; send result back to remote-node
-    (apply task-finished this-node, remote-node)))
+      (catch Throwable t
+        (let [msg (format "%s execution resulted in an exception:\n%s" task-description (with-out-str (print-cause-trace t)))]
+          (log/debugf "Execution of %s %s of job %s from client %s failed with an exception." task-description task-id (:job-id task) (:client-id task))
+          (log/error msg)
+          [task {:exception msg :exception-scope :worker}])))))
+
+
+(let [resolve+execute resolve+execute]
+  (defn execute-task
+    [this-node, {:keys [function, data] :as task}]
+    (resolve+execute function, data)))
+
+
+(defn failed-task?
+  [{:keys [execution-data] :as finished-task-map}]
+  (contains? execution-data :exception))
+
+
+(let [execution execution,
+      execute-task execute-task,
+      failed-task? failed-task?]
+  (defn execute-batch
+    [this-node, {:keys [tasks] :as batch}]
+    (let [finished-tasks-coll (->> tasks
+                                (reduce
+                                  (fn [results, task]
+                                    (conj! results
+                                      (execution this-node, execute-task, false, "Task", task)))
+                                  (transient []))
+                                persistent!),
+          {failed-tasks true, completed-tasks false} (group-by failed-task? finished-tasks-coll)]
+      {:failed-tasks failed-tasks, :completed-tasks completed-tasks})))
+
+
+(let [execution execution,
+      execute-task execute-task,
+      execute-batch execute-batch]
+  (defn process-task
+    [this-node, remote-node, {:keys [task-id] :as task}]
+    (try     
+      (log/debugf "Processing task %s of job %s from client %s starts." task-id (:job-id task) (:client-id task))
+      (let [finished-task-map (if (protocol/task-batch? task)
+                                (execution this-node, execute-batch, true, "Batch", task)
+                                (execution this-node, execute-task, true, "Task", task))]
+        ; send result back to remote-node
+        (task-finished this-node, remote-node, finished-task-map))
+      (catch Throwable t
+        (let [msg (with-out-str (println "Task processing resulted in an exception:") (print-cause-trace t))]
+          (log/debugf "Processing task %s of job %s from client %s failed with an exception." task-id (:job-id task) (:client-id task))
+          (log/error msg))))))
 
 
 (defmethod handle-message :task-distribution
@@ -295,7 +357,7 @@
   (log/debugf "Received %s tasks from server %s" (count tasks) (node/node-info remote-node))
   (log/tracef "Received %s tasks from server %s:\n%s" (count tasks) (node/node-info remote-node) (with-out-str (pprint tasks)))
   (doseq [t tasks]    
-    (submit-work this-node (execute-task this-node, remote-node, t))))
+    (submit-work this-node (process-task this-node, remote-node, t))))
 
 
 (defmethod handle-message :worker-thread-setup

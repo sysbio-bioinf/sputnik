@@ -82,7 +82,7 @@
 
 (defn+opts run-classification-feature-selection
   [mode, seed, file-list | {client-config nil, export-filename nil, batch-size 1, save-all-populations false,
-                            pre-defined-folds nil, quiet false} :as options]
+                            pre-defined-folds nil, quiet false, sleep-duration nil, sleep-frequency nil} :as options]
   (when-not (== 1 (count file-list))
             (throw (IllegalArgumentException. "Only one csv files allowed for the classification feature selection!")))
 
@@ -105,7 +105,7 @@
                                       (c/create-client-from-config client-config)))
         evaluation-fn (case mode
                         :local (partial f/local-evaluation dataset-fn, file-spec, train-instances),
-                        :distributed (partial r/distributed-evaluation client, batch-size, (atom -1), dataset-fn,
+                        :distributed (partial r/distributed-evaluation sleep-duration, sleep-frequency, client, batch-size, (atom -1), dataset-fn,
                                        ; only filenames for remote execution (files are remotely in the same directory or on the classpath)
                                        (if (sequential? file-spec)
                                          (mapv #(-> % io/file .getName) file-spec)
@@ -164,6 +164,8 @@
    ["-A" "--save-all-populations" "Specifies that every population needs to be save to the given export file. Otherwise, only the final tested population is saved." :default false]
    ["-R" "--repeat N" "Specifies the number of repetitions for the experiment. (Applies only when no --folds are given.)" :parse-fn #(Integer/parseInt %) :validate [#(<= 1 %) "Must be greater than or equal to 1!"] :default 1]
    ["-Q" "--quiet" "Disables the printing of the final population."]
+   [nil  "--sleep-duration DURATION" "When given, specifies the duration (in milliseconds) that each remote calculation will be sent to sleep." :parse-fn #(when % (Integer/parseInt %)) :validate [#(or (nil? %) (< 0 %)) "When specified, must be greater than 0!"]]
+   [nil  "--sleep-frequency N" "When given, specifies the frequency (every N th) of sleeps among the remote calculations." :parse-fn #(when % (Integer/parseInt %)) :validate [#(or (nil? %) (< 0 %)) "When specified, must be greater than 0!"]]
    ["-L" "--log-level LEVEL" "Specifies the log level: trace, debug, info, warn, error, fatal"
     :parse-fn keyword :validate [#{:trace, :debug, :info, :warn, :error, :fatal} "Must be one of: trace, debug, info, warn, error, fatal"]
     :default :info]])
@@ -199,7 +201,7 @@
         {:keys [help, mode, generations, population-size, seed, folds,
                 flip-one-probability, flip-zero-probability, crossover-probability, one-probability, #_modify-flip-one-probability,
                 keep-best, progress, rescale-factor, client-config, batch-size, output-best-solutions,
-                export-data, save-all-populations, repeat, quiet, log-level]} options,
+                export-data, save-all-populations, repeat, quiet, sleep-duration, sleep-frequency, log-level]} options,
         seed-fn (if seed (constantly seed) #(java.lang.System/currentTimeMillis))]
     (l/configure-logging :filename "client.log" :log-level log-level)    
     (let [result (cond
@@ -230,7 +232,9 @@
                                      (into {} (remove (comp nil? second)
                                                 [[:rescale-factor rescale-factor]
                                                  [:pre-defined-folds folds]
-                                                 [:flip-one-probability flip-one-probability], [:flip-zero-probability flip-zero-probability]])))))))))]      
+                                                 [:flip-one-probability flip-one-probability], [:flip-zero-probability flip-zero-probability]
+                                                 [:sleep-duration sleep-duration]
+                                                 [:sleep-frequency sleep-frequency]])))))))))]      
       (when-not *in-repl*
         (t/wait-for-finished-output)
         (System/exit 0))

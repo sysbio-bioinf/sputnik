@@ -3,7 +3,8 @@
   (let [version-fn (try
                      (load-file "src/clj/sputnik/version.clj")
                      (catch java.io.FileNotFoundException e
-                       (load-file "workspace/sputnik/src/clj/sputnik/version.clj")))]
+                       ; workaround for CCW (version number is not needed anyway)
+                       (constantly "0.0.0-REPL-DEV")))]
     (version-fn)))
 
 (def version (get-version))
@@ -18,18 +19,19 @@
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [clojure.options "0.2.9"]
                  [org.clojure/tools.cli "0.3.1"]
+                 [txload "0.1.0"]
                  ; persistence:
-                 [frost "0.4.0"]
+                 [frost "0.4.1"]
                  ; logging:
                  [org.clojure/tools.logging "0.2.6"]
                  [org.slf4j/slf4j-api "1.7.7"]
                  [org.slf4j/slf4j-log4j12 "1.7.7"]                 
                  ; sputnik.satellite.ui:
-                 [ring "1.2.2"]
-                 [compojure "1.1.8" :exclusions [org.clojure/tools.macro]]
+                 [ring "1.3.1"]
+                 [compojure "1.2.1"]
                  [hiccup "1.0.5"]
                  [com.cemerick/friend "0.2.0"]
-                 [clj-time "0.4.4"]
+                 [clj-time "0.8.0"]
                  ; sputnik.control:
                  [org.cloudhoist/pallet "0.7.5"]
                  [seesaw "1.4.4" :exclusions [org.swinglabs.swingx/swingx-core]]
@@ -37,19 +39,12 @@
                  [org.bouncycastle/bcpkix-jdk15on "1.50"]]
   
   :profiles
-  {:dev {:dependencies [[clj-debug "0.7.3"]]}
-   :debug {:jvm-opts ["-Djavax.net.debug=ssl:record"]}
-   :1.2 {:dependencies [[org.clojure/clojure "1.2.1"]]}
-   :1.3 {:dependencies [[org.clojure/clojure "1.3.0"]]}
-   :1.4 {:dependencies [[org.clojure/clojure "1.4.0"]]}
-   :reflection {:global-vars {*warn-on-reflection* true}}}  
+  {:dev {:dependencies [[clj-debug "0.7.5"]
+                        [org.clojure/test.check "0.5.9"]]}
+   :debug {:jvm-opts ["-Djavax.net.debug=ssl:record"]}}  
+   
   
-  :aliases 
-  {"all" ["with-profile" "dev,1.2:dev,1.3:dev"]
-   "cleanbuild" ["do" "clean," "compile" ":all"]
-   "check" ["with-profile" "reflection" "do" "clean," "compile" ":all"]}  
-  
-  :repositories ^:replace
+  :repositories
   {"sonatype-snapshots" "https://oss.sonatype.org/content/repositories/snapshots",
    "sonatype" "https://oss.sonatype.org/content/repositories/releases/"}
   

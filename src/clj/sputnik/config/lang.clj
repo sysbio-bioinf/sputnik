@@ -166,9 +166,21 @@
   <admin-password>Password for the admin user in the web user interface of the server.</>
   <min-port>Minimal port number for the web user interface. First unused port will be used by the web UI.</>
   <max-port>Maximal port number for the web user interface. First unused port will be used by the web UI.</>
-  <scheduling>Funktion that dispatches tasks to worker nodes (and performs the sending as well).
-  This function is called with a server node instance when scheduling in the server is triggered.</>"
-  [| {admin-user nil, admin-password nil, min-ui-port 8080, max-ui-port 18080, scheduling nil} :as options]
+  <scheduling-timeout>Specifies the duration of the pauses between scheduling actions.</>
+  <scheduling-performance-interval-duration>Specifies the duration in milliseconds of the intervals
+  in which the performance of workers and jobs is tracked. (used for scheduling decisions and UI)</>
+  <scheduling-performance-interval-count>Specifies the number of the intervals
+  in which the performance of workers and jobs is tracked. (used for scheduling decisions and UI)</>
+  <max-task-count-factor>Specifies the factor that determines the maximum number of tasks of a worker (`max-task-count-factor` * thread-count).</>
+  <worker-task-selection>Specifies the filter function that decides which workers get tasks in the current scheduling run.</>
+  <worker-ranking>Specifies the function that ranks the workers - better ranked workers get new tasks first</>
+  provided that the worker-task-selection decided to send them any tasks.</>
+  <task-stealing>Specifies a function that selects already assigned tasks that are send to other workers. (No task stealing is an option as well.)</>
+  <task-stealing-factor>Similar to the `max-task-count-factor` but applies only to task stealing.</>"
+  [| {admin-user nil, admin-password nil, min-ui-port 8080, max-ui-port 18080,
+      scheduling-timeout 100, max-task-count-factor 2, worker-task-selection nil, worker-ranking nil,
+      task-stealing true, task-stealing-factor 2,
+      scheduling-performance-interval-duration (* 1000 60 5), scheduling-performance-interval-count 12} :as options]
   (role :sputnik/server options))
 
 (create-config-def server-role :sputnik/server)
@@ -242,7 +254,7 @@
   <compression-level>Specifies the level of compression 0-9 with 9 for best compression.</>"
   [| {keystore "keystore.ks", keystore-password nil, 
       truststore "truststore.ks", truststore-password nil,
-      protocol "SSL", ssl-enabled true,
+      protocol "TLSv1.2", ssl-enabled true,
       thread-count 2, buffer-init nil, buffer-max nil,
       compressed true, no-wrap true, compression-level 9} 
    :as options]

@@ -31,10 +31,7 @@
   (let [q (/ 1 (double (inc n)))]
     (+ 
       (* (- 1 q) avg)
-      (* q duration)
-    )
-  )
-)
+      (* q duration))))
 
 
 (defn- update-ema
@@ -43,12 +40,9 @@
 	  (let [factor (Math/exp (- (/ (double delta-time) period)))]
 	    (+
 	      (* factor ema)
-	      (* (- 1 factor) value)
-	    )
-	  )
-    value
-  )
-)
+	      (* (- 1 factor) value)))
+    value))
+
 
 (defn- estimate-total-concurrency
   [{:keys [thread-cpu-time-sum, thread-real-time-sum, start-time]}, now]
@@ -92,26 +86,15 @@
      (throw t))))
 
 
-(defn- duration-format
-  [duration]
-  (last
-	  (reduce
-	    (fn [[t, result], [div, space, delim]]
-	      [(quot t div)
-	       (format (str delim "%0" space "d%s") (mod t div) result)])
-	    [duration ""]
-	    [[1000 3 "."] [60 2 ":"] [60 2 ":"] [24 2 "d "] [365 3 ""]])))
-
 
 (defn duration-estimation-string
-  [remaining-runs, single-runtime, concurrency, total-spent-time]
+  [remaining-runs, single-runtime, concurrency, total-spent-time, now]
   (let [concurrency (if (zero? concurrency) 1.0 concurrency),
         estimation (long (/ (* single-runtime remaining-runs) concurrency))]
-    (format "%s   (=> %s)"
-      (duration-format estimation)
-      (duration-format (+ estimation total-spent-time)))))
-
-
+    (format "%s   (finshing on %s - total: %s)"
+      (fmt/duration-with-days-format estimation)
+      (fmt/datetime-format (+ estimation now))
+      (fmt/duration-with-days-format (+ estimation total-spent-time)))))
 
 
 
@@ -120,14 +103,12 @@
                 output-format, cpu-runtime-avg, cpu-runtime-ema, execution-efficiency-avg,
                 thread-real-time-sum, thread-cpu-time-sum]
          :as progress-data}]
-  (let [
-        concurrency (estimate-total-concurrency progress-data, now),        
+  (let [concurrency (estimate-total-concurrency progress-data, now),        
         remaining-tasks (- total-task-count completed-task-count),
         total-spent-time (long (- now start-time)),
         last? (zero? remaining-tasks)
         cpu-runtime-ema (if cpu-runtime-ema cpu-runtime-ema 0.0)
-        concurrency-ema (if concurrency-ema concurrency-ema 0.0)
-       ]
+        concurrency-ema (if concurrency-ema concurrency-ema 0.0)]
     (println     
 	    (format
         output-format
@@ -144,38 +125,37 @@
     (println "|")
     (println (format "|Execution efficiency:\n|AVG ~ %.3f" 
                ;(double execution-efficiency-avg)
-               (/ (double thread-cpu-time-sum) (double thread-real-time-sum))
-               ))
+               (/ (double thread-cpu-time-sum) (double thread-real-time-sum))))
     (println "|")
-    (println (format "|Total spent time:\n|SUM ~ %s" (duration-format total-spent-time)))
+    (println (format "|Total spent time:\n|SUM ~ %s" (fmt/duration-with-days-format total-spent-time)))
     (println "|")
     (when (not last?)
       (println 
         (format "|Estimated remaining time:\n|AVG ~ %s\n|EMA ~ %s"
-          (duration-estimation-string remaining-tasks, cpu-runtime-avg, concurrency, total-spent-time)
-          (duration-estimation-string remaining-tasks, cpu-runtime-ema, concurrency-ema, total-spent-time)))
+          (duration-estimation-string remaining-tasks, cpu-runtime-avg, concurrency, total-spent-time, now)
+          (duration-estimation-string remaining-tasks, cpu-runtime-ema, concurrency-ema, total-spent-time, now)))
       (println "|"))
     (println (format "|Estimated concurrency:\n|AVG ~ %.2f\n|EMA ~ %.2f\n" concurrency concurrency-ema))
 		(print \newline)))
 
 
 (defn- update+print-progress
-  [progress-data, results] (trace (str (count results) " results reported!"))
+  [progress-data, results, exceptions]
+  (trace (str (count results) " results reported!"))
   (try
 	  (let [now (System/currentTimeMillis),         
 	        ; updata progress data with task result
 	        progress-data (reduce #(update-progress-data %, %2, now) progress-data results), ;(update-progress-data progress-data, result, now),
-	        {:keys [print-timeout last-print-time completed-task-count total-task-count]} progress-data,
-          exceptions (keep :exception results)
-	       ]
+	        {:keys [print-timeout last-print-time completed-task-count total-task-count]} progress-data]
       (when (seq exceptions) 
         (println (format "%s exceptions during task execution:" (count exceptions)))
         (doseq [e-msg exceptions]
           (println e-msg)
           (println (apply str (repeat 40 "-"))))
         (flush))
-	    (if (and (:print-progress progress-data)
-	             (or (= completed-task-count total-task-count) (<= print-timeout (- now last-print-time))))
+	    (if (and
+           (:print-progress progress-data)
+           (or (= completed-task-count total-task-count) (<= print-timeout (- now last-print-time))))
 	      (do
 	        ; [progress-data, start-time, end-time, now, experiment-cpu-time, process-cpu-time]          
 	        (print-current-progress now, progress-data)
@@ -232,5 +212,5 @@
                              0,
                              ; print-progress
                              (boolean print-progress)))]
-      (fn report-progress [results]
-        (send-off progress-agent update+print-progress results)))))
+      (fn report-progress [results, exceptions]
+        (send-off progress-agent, update+print-progress, results, exceptions)))))

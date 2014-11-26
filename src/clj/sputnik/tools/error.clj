@@ -12,4 +12,10 @@
 (defn illegal-argument
   "Throws an IllegalArgumentException with the given format applied to the given arguments as message."
   [fmt & args]
-  (throw (IllegalArgumentException. (apply format fmt args))))
+  (throw (IllegalArgumentException. ^String (apply format fmt args))))
+
+
+(defn exception
+  "Throws an Exception with the given format applied to the given arguments as message."
+  [fmt & args]
+  (throw (Exception. ^String (apply format fmt args))))

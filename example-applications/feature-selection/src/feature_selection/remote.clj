@@ -16,7 +16,7 @@
     [clojure.options :refer [defn+opts, ->option-map]]
     [sputnik.satellite.client :as c]
     [sputnik.satellite.protocol :as p]
-    [sputnik.satellite.resolve :as r]
+    [sputnik.tools.resolve :as r]
     [sputnik.tools.format :as fmt]
     [sputnik.tools.file-system :as fs]
     [sputnik.config.api :as cfg]
@@ -27,18 +27,33 @@
     java.util.concurrent.CountDownLatch))
 
 
+(defn active-sleeping
+  "Wait for the specified amount of time by calculating nonsence for cpu usage."
+  [duration]
+  (let [begin (System/currentTimeMillis)
+        end (+ begin duration)]
+    (loop []
+      (when (< (System/currentTimeMillis) end)
+        (reduce * (repeat 10000 1.001))
+        (recur)))))
 
 
 (defn batch-evaluation
-  [load-datasets-fn, file-list, sample-list, individual-data-list]
-  (persistent!
-    (reduce
-      (fn [res, {:keys [individual-id, selected-genes-array]}]
-        (conj! res
-          (assoc (f/evaluate-feature-selection load-datasets-fn, file-list, sample-list, selected-genes-array)
-            :individual-id individual-id)))
-      (transient [])
-      individual-data-list)))
+  ([load-datasets-fn, file-list, sample-list, individual-data-list]
+    (batch-evaluation load-datasets-fn, file-list, sample-list, individual-data-list, nil))
+  ([load-datasets-fn, file-list, sample-list, individual-data-list, sleep-duration]
+    (let [result (persistent!
+                   (reduce
+                     (fn [res, {:keys [individual-id, selected-genes-array]}]
+                       (conj! res
+                         (assoc (f/evaluate-feature-selection load-datasets-fn, file-list, sample-list, selected-genes-array)
+                           :individual-id individual-id)))
+                     (transient [])
+                     individual-data-list))]
+      ; when specified then sleep for the specified duration
+      (when sleep-duration
+        (active-sleeping sleep-duration))
+      result)))
 
 
 (defn prepare-remote-evaluation-tasks-batched
@@ -80,10 +95,23 @@
         results))))
 
 
+(defn maybe-add-sleep-duration
+  [sleep-duration, sleep-frequency, tasks]
+  (if (and sleep-duration sleep-frequency)
+    (mapv
+      (fn [i, task]
+        (cond-> task
+          (zero? (mod i sleep-frequency))
+          (p/conj-task-data sleep-duration)))
+      (range)
+      tasks)
+    tasks))
+
 
 (defn distributed-evaluation
-  [client, batch-size, jobcounter-atom, load-datasets-fn, file-list, sample-list, population]
+  [sleep-duration, sleep-frequency, client, batch-size, jobcounter-atom, load-datasets-fn, file-list, sample-list, population]
   (let [{:keys [tasks, individuals-map]} (prepare-remote-evaluation-tasks-batched sample-list, load-datasets-fn, file-list, population, batch-size),
+        tasks (maybe-add-sleep-duration sleep-duration, sleep-frequency, tasks)
         job-id (swap! jobcounter-atom inc),
         job (p/create-job (format "%s - %03d" (fmt/datetime-filename-format (java.lang.System/currentTimeMillis)), job-id), tasks),
         _ (log/debugf "Starting computation of job %s:\n%s" (:job-id job) (with-out-str (pp/pprint job))),

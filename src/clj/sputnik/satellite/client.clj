@@ -12,6 +12,7 @@
     java.io.Closeable)
   (:require
     [clojure.java.io :as io]
+    [clojure.string :as str]
     [clojure.pprint :refer [pprint]]
     [clojure.stacktrace :refer [print-cause-trace]]
     [clojure.tools.logging :as log]
@@ -21,7 +22,8 @@
     [sputnik.satellite.role-based-messages :as role]
     [sputnik.satellite.progress :as progress]
     [sputnik.config.api :as cfg]
-    [sputnik.tools.file-system :as fs]))
+    [sputnik.tools.file-system :as fs]
+    [sputnik.tools.error :as e]))
 
 
 
@@ -147,13 +149,90 @@
         (result-callback finished-tasks)))))
 
 
+
+(defn maybe-fix-job-id-or-task-ids
+  [job]
+  (let [tasks (:tasks job),
+        task-id-freq (frequencies (mapv :task-id tasks))
+        duplicate-map (when-let [duplicate-task-ids (seq (filter #(> (val %) 1) task-id-freq))]
+                        (into {} duplicate-task-ids))
+        missing-task-ids? (contains? task-id-freq nil)
+        missing-job-id? (-> job :job-id nil?)
+        job-id (when missing-job-id? (str (java.util.UUID/randomUUID)))]
+    (when (or duplicate-map missing-task-ids?)
+      (let [msg (format
+                  "Some tasks of job \"%s\" have %s task ids. All task ids are replaced. Either fix the task ids or do not rely on the task ids for further processing.%s"
+                  (:job-id job)
+                  (cond 
+                    (and duplicate-map missing-task-ids?) "no or duplicate"
+                    duplicate-map "duplicate"
+                    missing-task-ids? "no")
+                  (if duplicate-map
+                    (->> duplicate-map (sort-by key >) (take 3) (map (fn [[id n]] (str n "x " id))) (str/join ", ") (str "\n"))
+                    ""))]
+        (log/errorf msg)
+        (println "\nERROR:\n" msg "\n")))
+    (when missing-job-id?
+      (let [msg (format "The submitted job has no job id. Assigning new job id \"%s\"." job-id)]
+        (log/errorf msg)
+        (println "\nERROR:\n" msg "\n")))
+    (cond-> job
+      (or duplicate-map missing-task-ids?)
+        (assoc :tasks (mapv (fn [id, task] (assoc task :task-id id)) (range 1 (inc (count tasks))) tasks))
+      missing-job-id?
+        (assoc :job-id job-id))))
+
+
+(defn create-batched-job
+  [{:keys [job-id, tasks] :as job}, batch-size]
+  (when-not (pos? batch-size)
+    (e/illegal-argument "Batch size must be a positive integer! %s was specified." batch-size))
+  (protocol/create-job
+    job-id,
+    (->> tasks
+      (partition-all batch-size)
+      (mapv #(protocol/create-task-batch (inc %1), %2) (range)))))
+
+
+
+(defn unwrap-batched-tasks
+  [finished-tasks]
+  (persistent!
+    (reduce
+      (fn [results, batch-task]
+        (let [{:keys [failed-tasks, completed-tasks]} (get-in batch-task [:execution-data, :result-data])]
+          (reduce conj! (reduce conj! results completed-tasks) failed-tasks)))
+      (transient [])
+      finished-tasks)))
+
+
+(defn extract-exceptions
+  [batched?, finished-tasks]
+  (remove nil?
+    (mapcat
+      (fn [task]
+        (let [exception (get-in task [:execution-data, :exception])
+              nested-exceptions (when batched?
+                                  (seq
+                                    ; extract exception from each failed task
+                                    (keep :exception
+                                      ; get failed tasks
+                                      (get-in task [:execution-data, :result-data, :failed-tasks]))))]
+          ; if task batch, then list the root exception first and the nested exceptions subsequently
+          (cond->> nested-exceptions
+            exception
+            (list* exception))))
+      finished-tasks)))
+
+
 (defn progress-callback
-  [report-progress, result-callback, count-down, client, finished-tasks]
+  [batched?, report-progress, result-callback, count-down, client, finished-tasks]
   (when report-progress
-    (report-progress (map :execution-data finished-tasks)))
+    ; progress report based on batched tasks (if batched) but with all exceptions (-> extract from batch)
+    (report-progress (map :execution-data finished-tasks), (extract-exceptions batched?, finished-tasks)))
   (when result-callback
     (try
-      (result-callback client, finished-tasks)
+      (result-callback client, (cond-> finished-tasks batched? unwrap-batched-tasks))
       (catch Throwable t
         (log/error (str "Exception caught when calling the result callback:\n" (with-out-str (print-cause-trace t)))))))
   (dotimes [_ (count finished-tasks)] 
@@ -163,13 +242,20 @@
 (defn+opts execute-job
   "Submits the job to the client and waits until all tasks are completed.
   <result-callback>Specifies a callback function that is invoked with the `client` and the `finished-tasks` when a new list of task results is received.</>
-  <job-finished-callback>Specifies a callback function that is invoked with the `client` when the all tasks of the job are finished.</>"
-  [client, job | {result-callback nil, job-finished-callback nil} :as options]
-  (let [task-count (count (:tasks job)),
+  <job-finished-callback>Specifies a callback function that is invoked with the `client` when the all tasks of the job are finished.</>
+  <check>Specifies whether the job id and the task ids are checked to ensure that Sputnik can manage the tasks.
+  Provided you ensure unique task ids you can switch this off to save time.</>
+  <batch-size>When specified, the tasks are grouped to batches of `batch-size` many tasks that are evaluated together on one worker.</>"
+  [client, job | {result-callback nil, job-finished-callback nil, check true, batch-size nil} :as options]
+  (let [job (cond-> job
+              check maybe-fix-job-id-or-task-ids
+              batch-size (create-batched-job batch-size)),
+        task-count (count (:tasks job)),
         latch (CountDownLatch. task-count)]
 	    (log/infof "Starting a job with %s tasks." task-count)    
 	    (submit-job client, job, 
-	      (partial progress-callback 
+	      (partial progress-callback
+          (boolean batch-size),
 	        (progress/create-progress-report task-count, options), 
 	        result-callback,
 	        #(.countDown latch)))
@@ -191,11 +277,16 @@
   [client, job | {async false} :as options]
   (let [results-atom (atom []),
         job-execution (future
-                        (execute-job client, job,
-                          :result-callback
-                          (fn [_, finished-tasks]
-                            (swap! results-atom into (result-data finished-tasks))),
-                          options)),
+                        (try
+                          (execute-job client, job,
+                            :result-callback
+                            (fn [_, finished-tasks]
+                              (swap! results-atom into (result-data finished-tasks))),
+                            options)
+                          (catch Throwable e
+                            (log/errorf "An exception occured during the execution of job \"%s\". Details:\n%s"
+                              (:job-id job), (with-out-str (print-cause-trace e)))
+                            (throw e)))),
         deref-future #'clojure.core/deref-future,
         result-ref (reify
                      clojure.lang.IDeref 

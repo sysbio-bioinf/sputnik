@@ -10,7 +10,7 @@ The evaluation of each population is parallelized among the available workers of
 
 ## Download
 
-The runnable feature selection program can be downloaded from [here](../../../../releases/download/v0.3.1/feature-selection-1.0.0.jar).
+The runnable feature selection program can be downloaded from [here](../../../../releases/download/v0.4.0/feature-selection-1.0.2.jar).
 
 
 ## Build
@@ -27,7 +27,7 @@ The Sputnik cluster can be configured and started from the included graphical us
 able to generated a matching client configuration file.
 The graphical user interface is started with the following command.
 ```bash
-$ java -jar feature-selection-1.0.0.jar setup
+$ java -jar feature-selection-1.0.2.jar setup
 ```
 The documentation for the setup can be found in the [Sputnik project](../../doc/ConfigurationDeployment.md).
 
@@ -36,7 +36,7 @@ The documentation for the setup can be found in the [Sputnik project](../../doc/
 
 All available command line options can be listed via the following.
 ```bash
-$ java -jar feature-selection-1.0.0.jar run -h
+$ java -jar feature-selection-1.0.2.jar run -h
 
 Usage: java -jar feature-selection-<VERSION>.jar run <OPTIONS> <FILES>
 
@@ -72,7 +72,7 @@ This section describes how the experiments in the paper were run (TODO: add pape
 
 The runtime experiments were started as follows:
 ```bash
-$ java -jar feature-selection-1.0.0.jar run data/west.csv --folds data/west_folds.txt \
+$ java -jar feature-selection-1.0.2.jar run data/west.csv --folds data/west_folds.txt \
 --one-probability 0.01 --flip-one-probability 0.5 --flip-zero-probability 0.5 --crossover-probability 0.01 \
 --keep-best 0.005 --population-size 10000 --generations 5 --rescale-factor 4 --seed 4711 \
 --client-config <PATH/TO/client.cfg> --mode distributed --batch-size 5 \
@@ -80,7 +80,7 @@ $ java -jar feature-selection-1.0.0.jar run data/west.csv --folds data/west_fold
 ```
 Replace ```<PATH/TO/client.cfg>``` with the actual path to your client configuration file which you have generated via:
 ```bash
-$ java -jar feature-selection-1.0.0.jar setup
+$ java -jar feature-selection-1.0.2.jar setup
 ```
 The datasets that were used in our experiments are available in the [data](data/) folder.
 
@@ -89,7 +89,7 @@ The datasets that were used in our experiments are available in the [data](data/
 
 The feature selection experiments were started as follows: (TODO: datasets and folds under directory "data"?)
 ```bash
-$ java -jar feature-selection-1.0.0.jar run data/<DATASET>.csv --folds data/<DATASET>_folds.txt \
+$ java -jar feature-selection-1.0.2.jar run data/<DATASET>.csv --folds data/<DATASET>_folds.txt \
 --one-probability 0.01 --flip-one-probability 0.5 --flip-zero-probability 0.5 --crossover-probability 0.01 \
 --keep-best 0.005 --population-size 10000 --generations 200 --rescale-factor 4 \
 --client-config ~/sputnik-config/client.cfg --mode distributed --batch-size 5 \

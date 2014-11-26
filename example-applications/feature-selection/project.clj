@@ -1,4 +1,4 @@
-(def version "1.0.1")
+(def version "1.0.2")
 
 (defproject feature-selection version
   :min-lein-version "2.0.0"
@@ -9,10 +9,9 @@
             :distribution :repo}
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [org.clojure/tools.cli "0.3.1"]
-                 [sputnik "0.3.2"]
-                 #_[pareto "0.1.0"]]
+                 [sputnik "0.4.0"]]
   
-  :profiles {:dev {:dependencies [[clj-debug "0.7.3"]]}}
+  :profiles {:dev {:dependencies [[clj-debug "0.7.5"]]}}
   
   :main feature-selection.main
   :aot [feature-selection.main]
@@ -20,4 +19,5 @@
   :jvm-opts ^:replace []
   
   :jar-name ~(format "feature-selection-lib-%s.jar" version)
-  :uberjar-name ~(format "feature-selection-%s.jar" version))
+  :uberjar-name ~(format "feature-selection-%s.jar" version)
+)

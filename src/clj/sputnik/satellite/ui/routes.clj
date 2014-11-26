@@ -42,7 +42,14 @@
       (views/export-worker-task-durations server-node)
       (r.u.response/redirect "/admin"))
     
-    (GET "/exceptions" request (views/exceptions server-node))))
+    (GET "/exceptions" request (views/exceptions server-node))
+    
+    (GET "/logs" request (views/server-logs-list server-node))
+    
+    (GET "/logs/:logname" [logname]
+      (or
+        (views/server-log server-node, logname)
+        (r.u.response/redirect "/admin/logs")))))
 
 
 (defn main-routes

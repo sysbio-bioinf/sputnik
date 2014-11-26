@@ -58,14 +58,18 @@
         (get nodekey)))))
 
 
+(defn ^SslRMIServerSocketFactory create-ssl-rmi-server-socket-factory
+  [ssl-context]
+  (SslRMIServerSocketFactory. ssl-context, nil, (into-array String ["TLSv1.1", "TLSv1.2"]), true))
+
 (defonce ^{:private true} rmi-registries (ref {}))
 
 (defn+opts ^Registry create-rmi-registry
   "Creates a new rmi"
-  [port | {ssl-enabled false}]
+  [port | {ssl-enabled false, ssl-context nil}]
   (let [create (fn [] 
                  (if ssl-enabled
-                   (LocateRegistry/createRegistry (int port), (SslRMIClientSocketFactory.), (SslRMIServerSocketFactory.))
+                   (LocateRegistry/createRegistry (int port), (SslRMIClientSocketFactory.), (create-ssl-rmi-server-socket-factory ssl-context))
                    (LocateRegistry/createRegistry (int port))))
         params {:port port, :ssl-enabled ssl-enabled}] 
     (dosync
@@ -116,7 +120,7 @@
   (nodename [this])
   (set-rmi-node [this, rmi-node])
   (set-logout-handler [this, handler])
-  (set-node-check-future [this, f])
+  (set-node-check-continue-flag [this, f])
   (user-data [this])
   (user-data! [this, value]))
 
@@ -236,7 +240,7 @@
 
 
 ; byte-freezer is a thread-local constant so it must be dereferenced
-(deftype SputnikNode [^Registry rmi-registry, ^{:volatile-mutable true} logout-handler, ^{:volatile-mutable true} rmi-node, ^{:volatile-mutable true} node-check-future, ^ThreadPoolExecutor thread-pool, byte-freezer, remote-nodes, hostname, nodename, port, ssl-enabled?, custom-user-data]
+(deftype SputnikNode [^Registry rmi-registry, ^{:volatile-mutable true} logout-handler, ^{:volatile-mutable true} rmi-node, ^{:volatile-mutable true} continue?-atom, ^ThreadPoolExecutor thread-pool, byte-freezer, remote-nodes, hostname, nodename, port, ssl-enabled?, custom-user-data]
   
   ISputnikNode
   (get-remote-node [this, id]
@@ -277,8 +281,8 @@
   (set-rmi-node [this, new-rmi-node]
     (set! rmi-node new-rmi-node))
   
-  (set-node-check-future [this, f]
-    (set! node-check-future f))
+  (set-node-check-continue-flag [this, continue?-flag]
+    (set! continue?-atom continue?-flag))
   
   (set-logout-handler [this, handler]
     (set! logout-handler handler))
@@ -292,6 +296,8 @@
       (shutdown custom-user-data now?))
     ; ... then shutdown the thread pool ...
     (shutdown-thread-pool thread-pool, now?)
+    ; stop pinging
+    (reset! continue?-atom false)
     ; ... finally logout at every remote node
     (doseq [[_ remote-node] @remote-nodes]
       (trace (format "Logging out at %s" (node-info remote-node)))
@@ -355,10 +361,10 @@
 
 
 (defn+opts create-rmi-node
-  [login-handler, message-handler, logout-handler | {node-port 0, ssl-enabled false} :as options]
+  [login-handler, message-handler, logout-handler | {node-port 0, ssl-enabled false, ssl-context nil} :as options]
   (if ssl-enabled
     (rmi-node-proxy login-handler, message-handler, logout-handler, 
-      [node-port, (SslRMIClientSocketFactory.), (SslRMIServerSocketFactory.)])
+      [node-port, (SslRMIClientSocketFactory.), (create-ssl-rmi-server-socket-factory ssl-context)])
     (rmi-node-proxy login-handler, message-handler, logout-handler, 
       [node-port])))
 
@@ -414,37 +420,39 @@
 
 
 (defn remote-node-check 
-  [this-node, alive-check-timeout]
+  [this-node, alive-check-timeout, continue?-atom]
   (debug "Remote node check thread has started.")
   (let [sleep-duration (quot alive-check-timeout 2)]
     (loop []
-	    (try
-	      ; sleep until next check
-	      (Thread/sleep sleep-duration)
-	      ; TODO: complete transaction for node-data-list access and updates? 
-	      ; in principle: data will be changed only if a node is not reachable anymore and then missed updates to its data do not matter.
-	      (let [remote-node-list (remote-nodes this-node),
-	            now (System/currentTimeMillis)]        
-	        (doseq [remote-node remote-node-list]
-	          (when (> (- now (last-activity remote-node)) alive-check-timeout)
-	            (trace (format "Node %s was not active in the last %sms." (node-info remote-node) alive-check-timeout))
-	            (if (ping remote-node)
-	              (trace (format "Node %s is still alive." (node-info remote-node)))
-	              (do
-	                (error (format "Node %s did not respond to ping!" (node-info remote-node)))
-	                (remote-node-unreachable this-node, (node-id remote-node)))))))
-	      (catch Throwable t
-	        (error (format "Exception caught in the node check thread:\n%s" (with-out-str (print-cause-trace t))))))
-	    (recur))))
-
+      (try
+        ; sleep until next check
+        (Thread/sleep sleep-duration)
+        ; TODO: complete transaction for node-data-list access and updates? 
+        ; in principle: data will be changed only if a node is not reachable anymore and then missed updates to its data do not matter.
+        (let [remote-node-list (remote-nodes this-node),
+              now (System/currentTimeMillis)]        
+          (doseq [remote-node remote-node-list]
+            (when (> (- now (last-activity remote-node)) alive-check-timeout)
+              (trace (format "Node %s was not active in the last %sms." (node-info remote-node) alive-check-timeout))
+              (if (ping remote-node)
+                (trace (format "Node %s is still alive." (node-info remote-node)))
+                (do
+                  (error (format "Node %s did not respond to ping!" (node-info remote-node)))
+                  (remote-node-unreachable this-node, (node-id remote-node)))))))
+        (catch Throwable t
+          (error (format "Exception caught in the node check thread:\n%s" (with-out-str (print-cause-trace t))))))
+      (when @continue?-atom
+        (recur)))))
+ 
 
 (defn+opts start-remote-node-check-thread
   "
   <alive-check-timeout>Timeout (in msec) after which all remote nodes are checked whether they are still alive.</>"
   [this-node | {alive-check-timeout 500}]
-  (let [f (future (remote-node-check this-node, alive-check-timeout))]
+  (let [continue?-atom (atom true),
+        f (future (remote-node-check this-node, alive-check-timeout, continue?-atom))]
     (doto this-node
-      (set-node-check-future f))))
+      (set-node-check-continue-flag continue?-atom))))
 
 
 (defn+opts start-node
@@ -454,16 +462,18 @@
   <logout-handler>Function with parameters [this-node, remote-node, reason] that is called when a node logs out
   due to one of the following reasons: :disconnect, :unreachable.</>"
   [hostname, nodename, port, message-handler | {ssl-enabled false, login-handler nil, logout-handler nil} :as options]
-  (when ssl-enabled (ssl/setup-ssl options))
+  
   ; set hostname otherwise RMI might pick something like 127.0.1.1 from /etc/hosts 
   (System/setProperty "java.rmi.server.hostname" hostname)
-  (let [rmi-registry (create-rmi-registry port, options),        
+  (let [ssl-context (when ssl-enabled (ssl/setup-ssl options)),
+        rmi-registry (create-rmi-registry port, :ssl-context ssl-context, options),        
         sputnik-node (create-sputnik-node hostname, nodename, port, rmi-registry, ssl-enabled, options),
         logout-handler (partial logout-handler-wrapper sputnik-node, logout-handler),        
         rmi-node (create-rmi-node
                    (partial login-handler-wrapper sputnik-node, login-handler),
                    (partial message-handler-wrapper sputnik-node, message-handler),
                    logout-handler,
+                   :ssl-context ssl-context,
                    options)]
     (set-rmi-node sputnik-node rmi-node)
     (set-logout-handler sputnik-node logout-handler)

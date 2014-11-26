@@ -9,9 +9,9 @@
 (ns sputnik.tools.file-system
   (:require
     [clojure.java.io :as io]
-    [clojure.string :as string])
-  (:use
-    [clojure.options :only [defn+opts]])
+    [clojure.string :as string]
+    [clojure.options :refer [defn+opts]]
+    [sputnik.tools.error :as e])
   (:import
     java.io.File))
 
@@ -129,3 +129,37 @@
   [url]
   (or (some-> url file-exists)
     (some-> url io/resource file-exists)))
+
+
+
+(defn create-filter-fn
+  [x]
+  (cond 
+    (fn? x) x
+    (string? x) (fn [^String file-name] (.contains file-name ^String x))
+    (instance? java.util.regex.Pattern x) (fn [file-name] (re-find x file-name))
+    :else (e/illegal-argument "Value of class %s is not a valid filter description!" (-> x class .getCanonicalName))))
+
+
+(defn list-files
+  ([]
+    (list-files (System/getProperty "user.dir")))
+  ([directory]
+    (list-files directory, (constantly true)))
+  ([directory, file-filter]
+    (list-files directory, file-filter, false))
+  ([directory, file-filter, recursive?]
+    (let [file-filter-fn (create-filter-fn file-filter)]
+      (when-let [dir (file-exists directory)]
+        (loop [dir-list [dir], result (transient [])]
+          (let [{sub-dirs true, files false} (group-by #(.isDirectory ^File %) (seq (.listFiles ^File (first dir-list))))
+                file-urls (->> files (filter #(file-filter-fn (.getName ^File %))) (map #(.getPath ^File %))),
+                ; if some matching files were found, add them
+                result (if (seq file-urls) (reduce conj! result (sort file-urls)) result),
+                ; if subdirs are found, add them
+                dir-list (cond-> (vec (rest dir-list))
+                           (seq sub-dirs)
+                           (into (sort-by #(.getName ^File %) sub-dirs)))]
+	           (if (and recursive? (seq dir-list))
+	             (recur dir-list, result)            
+	             (persistent! result))))))))

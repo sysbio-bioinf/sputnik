@@ -63,8 +63,22 @@
 ; task & job
 
 (defn create-task
-  [task-id, execute-fn, & param-data]
-  {:task-id task-id, :function execute-fn, :data (vec param-data)})
+  ([task-id, execute-fn, & param-data]
+    {:task-id task-id, :task-type :single-task, :function execute-fn, :data (vec param-data)}))
+
+(defn conj-task-data
+  ([task, data-1]
+    (update-in task [:data] conj data-1))
+  ([task, data-1 & additional-data]
+    (update-in task [:data] into (list* data-1 additional-data))))
+
+(defn create-task-batch
+  ([task-id, task-coll]
+    {:task-id task-id, :task-type :task-batch, :tasks (vec task-coll)}))
+
+(defn task-batch?
+  [task]
+  (= (:task-type task) :task-batch))
 
 (defn create-job
   [job-id, tasks]

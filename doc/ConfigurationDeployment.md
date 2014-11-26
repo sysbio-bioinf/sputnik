@@ -56,11 +56,20 @@ One of the predefined scheduling strategies can be chosen.
 The *admin user* and *admin password* are used to login to the web user interface.
 The server uses the minimum unused port in the given range of ports for the webserver that runs the web user interface,
 e.g. when port ```8080``` has been configured as minimum port and this port is unused on the server ```server.mydomain.org```
-the web user interface will run on ```http://server.mydomain.org:8080``` after launching the server. 
+the web user interface will run on ```http://server.mydomain.org:8080``` after launching the server.
 
 <p align="center">
 <img src="images/server-config.png" alt="Configuration of server nodes" title="Configuration of server nodes" align="center" />
 </p>
+
+The **task scheduling strategy** of the server can be customized as follows.
+The maximum number of tasks of a worker is determined by the product of the number of used threads and a configurable factor (*maximum task count factor*).
+The function specified as *worker task selection* selects the workers which will get new tasks in the current scheduling run.
+This decision is usually made based on the number of new tasks that the worker will get.
+The order of the workers for task assignment is determined by the function given as *worker ranking*.
+*Task stealing* can be activated. When it is activated the server starts reassigning tasks to other workers when there are no unassigned tasks left anymore. The first result of a reassigned task is accepted - all duplicates are discarded.
+The maximum number of tasks of a worker during the task stealing phase is determined by the *task stealing factor*.
+This is similar to the *maximum task count factor*.
 
 
 ## Worker Configurations
@@ -102,6 +111,8 @@ Both stores are encrypted with the specified passwords, respectively.
 
 The button *Create keystore and truststore for worker/server* triggers the generation of a new private key and certificate which are then
 stored in a keystore and truststore combination such that workers are able to connect to the server and vice versa.
+
+**Be aware that the generated certificates are self-signed. Hence, web browsers will show a corresponding warning when accessing the web user interface of the server.** 
 
 <p align="center">
 <img src="images/communication-config.png" alt="Communication configuration" title="Communication configuration" align="center" />

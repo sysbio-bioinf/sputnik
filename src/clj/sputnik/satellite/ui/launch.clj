@@ -11,12 +11,20 @@
     [ring.adapter.jetty :as jetty]
     [sputnik.satellite.ui.routes :as routes]
     [sputnik.tools.file-system :as fs]
-    [cemerick.friend :as friend])
-  (:use
-    [clojure.tools.logging :only [errorf, infof, debugf, tracef]]
-    [clojure.options :only [defn+opts]]))
+    [cemerick.friend :as friend]
+    [clojure.tools.logging :refer [errorf, infof, debugf, tracef]]
+    [clojure.options :refer [defn+opts]])
+  (:import
+    org.eclipse.jetty.server.Server))
 
 
+(defn use-only-tls
+  [^Server jetty]
+  (let [protocols (into-array String ["TLSv1.1" "TLSv1.2"])]
+    (doseq [con (->> jetty
+                  .getConnectors
+                  (filter #(instance? org.eclipse.jetty.server.ssl.SslSelectChannelConnector %)))]
+      (.setIncludeProtocols (.getSslContextFactory con) protocols))))
 
 
 (defn create-jetty-instance-ssl
@@ -28,6 +36,7 @@
 		                    :ssl-port ssl-port
 		                    :keystore keystore
 		                    :key-password keystore-password
+                        :configurator use-only-tls
                         ; do not block
                         :join? false})))
 
@@ -73,5 +82,3 @@
 		          (success-fn port)
 		          jetty-instance)
             (recur (+ port step))))))))
-
-

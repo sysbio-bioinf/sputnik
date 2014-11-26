@@ -12,16 +12,16 @@
     [sputnik.satellite.worker :as worker]
     [sputnik.satellite.client :as client]
     [sputnik.satellite.rest-client :as rest-client]
-    [sputnik.satellite.server.scheduling :as scheduling]
     [sputnik.satellite.ui.launch :as ui]
-    [sputnik.satellite.resolve :as resolve]
+    [sputnik.tools.resolve :as resolve]
     [sputnik.tools.logging :as log]
     [sputnik.version :as v]
     [sputnik.config.api :as cfg]
     [clojure.string :as string]
     [clojure.java.io :as io]
     [clojure.tools.logging :refer [debug, error, *force*]]
-    [clojure.tools.cli :as cli])
+    [clojure.tools.cli :as cli]
+    [txload.core :as tx])
   (:use
     [clojure.main :only [repl]]
     [clojure.stacktrace :only [print-cause-trace]]
@@ -34,21 +34,9 @@
   (ui/launch server-node, min-port, max-port, admin-user, admin-password, (->option-map options)))
 
 
-(def builtin-scheduling-strategies
-  {:task-stealing scheduling/default-scheduling,
-   :no-task-stealing scheduling/scheduling-without-stealing})
-
 (defn start-server-with-config
   [{:keys [hostname, nodename, registry-port, scheduling-strategy] :as options}]
-  (let [server-node (server/start-server
-                      hostname, nodename, registry-port,                      
-                      (or
-                        (when scheduling-strategy
-                          (if (keyword? scheduling-strategy)
-                            (builtin-scheduling-strategies scheduling-strategy)
-                            (resolve/resolve-fn scheduling-strategy)))
-                        scheduling/default-scheduling),
-                      (->option-map options))
+  (let [server-node (server/start-server hostname, nodename, registry-port, (->option-map options))
         web-server (launch-web-ui server-node, options)] 
     (doto server-node
       (server/set-web-server web-server))))
@@ -127,6 +115,7 @@
 
 (defn start-node
   [node-type, options, main?]
+  (tx/enable)
   (case node-type
     :server (start-server-with-config options)
     :worker (start-worker-with-config options)

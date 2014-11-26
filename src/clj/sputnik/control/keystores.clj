@@ -23,7 +23,7 @@
     [clojure.string :as str]
     [clojure.java.io :as io]))
 
-
+; for self-signed certificates use subject = issuer (= alias here as well)
 
 (defn setup-provider
   []
@@ -66,8 +66,9 @@
         public-key (.getPublic keypair),
         private-key (.getPrivate keypair),
         serial-number (serial-number prng),
-        subjectDN (X500Name. (format "C=DE,O=%1$s,OU=%1$s,CN=%1$s" subject-name)),
-        issuerDN (X500Name. "C=DE,O=SputnikControl,OU=SputnikControl,CN=SputnikControl"),
+        issuer&subject (format "C=DE,O=%1$s,OU=%1$s,CN=%1$s" subject-name)
+        subjectDN (X500Name. issuer&subject),
+        issuerDN (X500Name. issuer&subject),
         now (System/currentTimeMillis),
         not-before (Date. now),
         not-after (Date. (+ now (* validity-period 1000 60 60 24))),
@@ -115,7 +116,7 @@
   (when (str/blank? key-alias)
     (throw (IllegalArgumentException. "Non-blank key alias needed!")))
   (setup-provider)
-  (let [cert (create-certificate "sputnik", 2048, 730)]
+  (let [cert (create-certificate key-alias, 2048, 730)]
     ; build keystore
     (doto (new-keystore)
       (add-keystore-entry key-alias, keystore-password, cert)
@@ -146,7 +147,8 @@
   (when (str/blank? server-key-alias)
     (throw (IllegalArgumentException. "Non-blank key alias for server key needed!")))
   (setup-provider)
-  (let [client-cert (create-certificate "sputnik", 2048, 730),
+  (let [client-key-alias (str "sputnik-client-" client-key-alias),
+        client-cert (create-certificate client-key-alias, 2048, 730),
         server-cert (load-certificate server-keystore-filename, server-keystore-password, server-key-alias)]
     (when (nil? server-cert)
       (throw (RuntimeException. (format "Certificate with alias \"%s\" not found in server keystore \"%s\"!" server-keystore-filename, server-key-alias))))

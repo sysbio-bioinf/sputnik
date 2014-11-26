@@ -10,11 +10,11 @@ The algorithm uses T tasks where each task draws P points. The T tasks can be co
 
 ## Download & Run
 
-The program can be downloaded from [here](../../../../releases/download/v0.3.1/simple-example-0.1.0.jar).
+The program can be downloaded from [here](../../../../releases/download/v0.4.0/simple-example-0.1.2.jar).
 
 The application can be run by just specifying a Sputnik client configuration, e.g. ```client.cfg``` as below.
 ```bash
-$ java -jar simple-example-0.1.0.jar --config client.cfg 
+$ java -jar simple-example-0.1.2.jar --config client.cfg 
 ```
 
 ## Build & Run
@@ -26,7 +26,7 @@ $ lein uberjar
 
 The built application can be run by just specifying a Sputnik client configuration, e.g. ```client.cfg``` as below.
 ```bash
-$ java -jar target/simple-example-0.1.0.jar --config client.cfg 
+$ java -jar target/simple-example-0.1.2.jar --config client.cfg 
 ```
 
 ## Sputnik setup
@@ -35,7 +35,7 @@ The Sputnik cluster can be configured and started from the included graphical us
 able to generated a matching client configuration file.
 The graphical user interface is started with the following command.
 ```bash
-$ java -jar target/simple-example-0.1.0.jar --setup
+$ java -jar target/simple-example-0.1.2.jar --setup
 ```
 The documentation for the setup can be found in the [Sputnik project](../../doc/ConfigurationDeployment.md).
 
@@ -60,7 +60,7 @@ When those are running start the computation via ```./run-computation.sh```.
 
 All available command line options can be listed via the following.
 ```bash
-$ java -jar target/simple-example-0.1.0.jar -h
+$ java -jar target/simple-example-0.1.2.jar -h
 
 Usage: java -jar simple-example-<VERSION>.jar run <OPTIONS> <FILES>
 

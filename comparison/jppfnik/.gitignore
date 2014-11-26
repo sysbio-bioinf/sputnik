@@ -1,0 +1,15 @@
+pom.xml
+*jar
+lib
+target
+native
+.lein-failures
+checkouts
+.lein-deps-sum
+bin
+temp
+ccw.repl.cmdhistory.prefs
+*.log
+/sputnik-control/sputnik-*
+Solomon
+*.data

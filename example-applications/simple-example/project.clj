@@ -1,4 +1,4 @@
-(def version "0.1.1")
+(def version "0.1.2")
 
 (defproject simple-example version
   :min-lein-version "2.0.0"
@@ -9,7 +9,7 @@
             :distribution :repo}
   :dependencies [[org.clojure/clojure "1.6.0"]
                  [org.clojure/tools.cli "0.3.1"]
-                 [sputnik "0.3.2"]]
+                 [sputnik "0.4.0"]]
   
   :main simple-example.main
   :aot [simple-example.main]
@@ -17,4 +17,4 @@
   :jar-name ~(format "simple-example-lib-%s.jar" version)
   :uberjar-name ~(format "simple-example-%s.jar" version)
   
-  :profiles {:dev {:dependencies [[clj-debug "0.7.3"]]}})
+  :profiles {:dev {:dependencies [[clj-debug "0.7.5"]]}})

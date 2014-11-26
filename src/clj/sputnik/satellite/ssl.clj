@@ -34,8 +34,8 @@
   <keystore-password>Password for the keystore.</>
   <truststore>Path to the file containing a Java keystore with the certificate entries which this process (a sputnik node) trusts.</>
   <truststore-password>Password for the truststore.</>
-  <protocol>Specifies the protocol to use. (Only \"SSL\" is tested.)</>"
-  [| {keystore "keystore.ks", keystore-password "", truststore "truststore.ks", truststore-password "", protocol "SSL"}]
+  <protocol>Specifies the protocol to use.</>"
+  [| {keystore "keystore.ks", keystore-password "", truststore "truststore.ks", truststore-password "", protocol "TLSv1.2"}]
   (let [; convert passwords for keystore and truststore to char array
         [keystore-pw truststore-pw] (map #(.toCharArray ^String %) [keystore-password truststore-password]),
         ; load keystore and truststore
@@ -48,14 +48,13 @@
               (.init ^KeyStore truststore))]
     ; create SSL context for the given protocol and initialize it
     (doto (SSLContext/getInstance protocol)
-      (.init (.getKeyManagers kmf), (.getTrustManagers tmf), nil))))
+      (.init (.getKeyManagers kmf), (.getTrustManagers tmf), nil)
+      (.. getDefaultSSLParameters (setNeedClientAuth true)))))
 
 
 (defn+opts setup-ssl
   "Set up the default SSLContext with the given options.
   Client authentication is mandatory."
   [| :as options]
-  (let [context (doto (create-ssl-context options)
-                  (-> .getDefaultSSLParameters (.setNeedClientAuth true)))]
-    (SSLContext/setDefault context)    
-    nil))
+  (doto (create-ssl-context options)
+    (SSLContext/setDefault)))

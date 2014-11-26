@@ -77,28 +77,89 @@
 
 (def ^:private server-display-properties
   ^{:config-type :sputnik/server} 
-  {:server-name      {:order 1, :path [:sputnik/config-id],       :type :symbol,
-                      :caption "Server ID"},
-   :server-node      {:order 2, :path [:sputnik/role-node],       :type :string,
-                      :caption "Server node", :choice (partial select-node-configs :sputnik/node)},
-   :admin-user       {:order 3, :path [:options :admin-user],     :type :string,
-                      :caption "Admin user"},
-   :admin-password   {:order 4, :path [:options :admin-password], :type :string,
-                      :caption "Admin password"},
-   :min-ui-port      {:order 5, :path [:options :min-ui-port],    :type :int,
-                      :caption "Minimum Web UI HTTP port"},
-   :max-ui-port      {:order 6, :path [:options :max-ui-port],    :type :int,
-                      :caption "Maximum Web UI HTTP port"},
-   :registry-port    {:order 7, :path [:options :registry-port],  :type :int,
-                      :caption "Registry port"},
-   :node-port        {:order 8, :path [:options :node-port],      :type :int,
-                      :caption "Node port"},
-   :sputnik-jvm-opts {:order 9, :path [:sputnik-jvm-opts],        :type :string,
-                      :caption "JVM options"},
-   :log-level        {:order 10, :path [:options :log-level],     :type :keyword,
-                      :caption "Logging level", :choice ["info", "trace", "debug", "warn", "error", "fatal"]}
-   :scheduling       {:order 11, :path [:options :scheduling],    :type :keyword,
-                      :caption "Scheduling", :choice ["task-stealing" "no-task-stealing"]}})
+  {:server-name
+     {:order 1,
+      :path [:sputnik/config-id],
+      :type :symbol,
+      :caption "Server ID"},
+   :server-node
+     {:order 2,
+      :path [:sputnik/role-node],
+      :type :string,
+      :caption "Server node",
+      :choice (partial select-node-configs :sputnik/node)},
+   :admin-user
+     {:order 3,
+      :path [:options :admin-user],
+      :type :string,
+      :caption "Admin user"},
+   :admin-password
+     {:order 4,
+      :path [:options :admin-password],
+      :type :string,
+      :caption "Admin password"},
+   :min-ui-port
+     {:order 5,
+      :path [:options :min-ui-port],
+      :type :int,
+      :caption "Minimum Web UI HTTP port"},
+   :max-ui-port
+     {:order 6,
+      :path [:options :max-ui-port],
+      :type :int,
+      :caption "Maximum Web UI HTTP port"},
+   :registry-port
+     {:order 7,
+      :path [:options :registry-port],
+      :type :int,
+      :caption "Registry port"},
+   :node-port
+     {:order 8,
+      :path [:options :node-port],
+      :type :int,
+      :caption "Node port"},
+   :sputnik-jvm-opts
+     {:order 9,
+      :path [:sputnik-jvm-opts],
+      :type :string,
+      :caption "JVM options"},
+   :log-level
+     {:order 10,
+      :path [:options :log-level],
+      :type :keyword,
+      :caption "Logging level",
+      :choice ["info", "trace", "debug", "warn", "error", "fatal"]}
+   :scheduling-timeout
+     {:order 11,
+      :path [:options :scheduling-timeout],
+      :type :int,
+      :caption "Scheduling timeout [ms]"} ,  
+   :max-task-count-factor
+     {:order 12,
+      :path [:options :max-task-count-factor],
+      :type :float,
+      :caption "Maximum task count factor"},
+   :worker-task-selection
+     {:order 13,
+      :path [:options :worker-task-selection],
+      :type :string,
+      :caption "Worker task selection"},
+   :worker-ranking
+     {:order 14,
+      :path [:options :worker-ranking],
+      :type :string,
+      :caption "Worker ranking"},
+   :task-stealing
+     {:order 15,
+      :path [:options :task-stealing],
+      :type :bool,
+      :caption "Task stealing",
+      :choice [true false]},
+   :task-stealing-factor
+     {:order 16,
+      :path [:options :task-stealing-factor],
+      :type :float,
+      :caption "Tasks stealing factor"}})
 
 
 (defn create-server-table
@@ -118,7 +179,7 @@
          {:key :node-port,        :text "Node port"}
          {:key :sputnik-jvm-opts, :text "JVM options"}
          {:key :log-level,        :text "Log level"}
-         {:key :scheduling,       :text "Scheduling"}]])))
+         {:key :task-stealing,    :text "Task stealing"}]])))
 
 
 
@@ -184,7 +245,8 @@
   [text, type]
   (case type
     :string  (when-not (str/blank? text) text),
-    :int     (Integer/parseInt text),
+    :int     (Long/parseLong text),
+    :float   (Double/parseDouble text)
     :symbol  (symbol text),
     :keyword (keyword text),
     :bool    (if (instance? Boolean text) text (Boolean/parseBoolean text))
@@ -197,7 +259,7 @@
   (case type
     :keyword (some-> value name),
     :symbol  (str value),
-    :bool    value
+    :bool    (if value "true" "false")
     (str value)))
 
 
@@ -315,7 +377,13 @@
                        {:registry-port 12000,
                         :node-port     12001,
                         :min-ui-port 8080,
-                        :max-ui-port 18080}},
+                        :max-ui-port 18080,
+                        :scheduling-timeout 100,
+                        :max-task-count-factor 2,
+                        :worker-task-selection 'sputnik.satellite.server.scheduling/any-task-count-selection
+                        :worker-ranking 'sputnik.satellite.server.scheduling/faster-worker-ranking
+                        :task-stealing true
+                        :task-stealing-factor 2}},
       :sputnik/worker {:sputnik/config-id "worker",
                        :options
                        {:registry-port 11000,

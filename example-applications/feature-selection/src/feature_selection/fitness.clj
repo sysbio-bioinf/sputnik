@@ -10,7 +10,7 @@
   (:require
     [clojure.set :as set]
     [clojure.options :refer [defn+opts]]
-    [sputnik.satellite.resolve :as r]
+    [sputnik.tools.resolve :as r]
     [feature-selection.bitset :as b]
     [feature-selection.merit :as m]
     [feature-selection.nearest-neighbor :as nn]))

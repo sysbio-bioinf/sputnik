@@ -15,17 +15,26 @@
     [sputnik.satellite.node :as node]
     [sputnik.satellite.protocol :as protocol]
     [sputnik.satellite.role-based-messages :as role]
-    [sputnik.satellite.server.management :as mgmt])
+    [sputnik.satellite.server.management :as mgmt]
+    [sputnik.tools.resolve :as r])
   (:import
     (java.util.concurrent LinkedBlockingQueue TimeUnit)
-    java.util.Collection))
+    java.util.Collection
+    org.eclipse.jetty.server.Server))
 
+
+
+(defn stop-jetty-server
+  [^Server server]
+  (.stop server))
 
 
 (defprotocol IServerData
-  (set-node-check-future [this, f])
   (set-jetty [this, j])
-  (trigger-scheduling [this])
+  (get-jetty [this])
+  (scheduling-fn [this])
+  (scheduling? [this])
+  (stop-scheduling [this])
   (worker-job-manager [this]))
 
 (defn- unwrap-promise
@@ -34,28 +43,56 @@
     @x
     x))
 
-(deftype ServerData [worker-job-manager, scheduling-agent, scheduling-fn, ^{:volatile-mutable true} jetty]
+(deftype ServerData [worker-job-manager, continue-scheduling?, scheduling-fn, ^{:volatile-mutable true} jetty]
   IServerData
   (set-jetty [this, j]
     (set! jetty j))
-  (trigger-scheduling [this]
-    ; unwrap promise the first time it is found as the agents value (for snychronisation, since scheduling needs the server node)
-    (send scheduling-agent (comp @scheduling-fn unwrap-promise)))
+  (get-jetty [this]
+    jetty)
+  (scheduling-fn [this]
+    @scheduling-fn)
+  (scheduling? [this]
+    @continue-scheduling?)
+  (stop-scheduling [this]
+    (reset! continue-scheduling? false))
   (worker-job-manager [this]
-    worker-job-manager))
+    worker-job-manager)
+  
+  node/IShutdown
+  (shutdown [this, now?]
+    (stop-scheduling this)
+    (when jetty
+      (stop-jetty-server jetty))))
  
 
-(defn create-server-data
-  [init-scheduling-fn, server-node-promise]
+(defn+opts create-server-data
+  [init-scheduling-fn, continue-scheduling?-atom | :as options]
   (ServerData.
     ; worker-job-manager
-    (mgmt/create-worker-job-manager),
-    ; scheduling-agent
-    (agent server-node-promise),
+    (mgmt/create-worker-job-manager options),
+    ; atom to shutdown the scheduling thread
+    continue-scheduling?-atom,
     ; scheduling-fn
     (atom init-scheduling-fn),
     ; jetty
     nil))
+
+
+(defn start-scheduling
+  [server-node, scheduling-timeout]
+  (future
+    (loop []
+      (let [server-data (node/user-data server-node)]
+        (try
+          (let [schedule (scheduling-fn server-data)]
+            (schedule server-node)
+            (Thread/sleep scheduling-timeout))
+          (catch Throwable e
+            (log/errorf "Exceptio in scheduling thread. Details:\n%s"
+              (with-out-str (print-cause-trace e)))))
+        (when (scheduling? server-data)
+          (recur)))))
+  server-node)
 
 
 (defn manager
@@ -64,15 +101,13 @@
   (-> server-node node/user-data worker-job-manager))
 
 
-(defn scheduling!
-  "Triggers scheduling for the given server node."
-  [server-node]
-  (-> server-node node/user-data trigger-scheduling))
-
-
 (defn set-web-server
   [server-node, ws]
   (-> server-node node/user-data (set-jetty ws)))
+
+(defn get-web-server
+  [server-node]
+  (-> server-node node/user-data get-jetty))
 
 
 (defn worker-finished-task-notification
@@ -149,8 +184,7 @@
       (do
         ; in case a worker logs out, its assigned tasks need to be requeued
         (log/infof "Requeueing current tasks of worker %s." (node/node-info remote-node))
-        (mgmt/worker-disconnected (manager server-node) (node/node-id remote-node))
-        (scheduling! server-node))
+        (mgmt/worker-disconnected (manager server-node) (node/node-id remote-node)))
     :client
       (mgmt/client-disconnected (manager server-node) (node/node-id remote-node))
     nil)
@@ -165,15 +199,68 @@
     nil))
 
 
+(defn- resolve-function
+  [info, fn-desc, default-value]
+  (or    
+    (when (some? fn-desc)
+      (let [f (r/resolve-fn fn-desc, true)]
+        (if (fn? f)
+          f
+          (log/errorf "%s: Identifier \"%s\" does not resolve to a function." info, fn-desc))))
+    ; otherwise return default value
+    (do
+      (log/infof "%s: Using default value" info)
+      default-value)))
+
+
+(defn- check-number
+  [info, x, default-value]
+  (if (number? x)
+    x
+    (do
+      (log/errorf "%s: Value \"%s\" is not a number! Using default: %s" info, x default-value)      
+      default-value)))
+
+
+(defmacro from-scheduling-ns
+  "Avoid cyclic dependency with scheduling namespace by resolving functions at runtime."
+  [symb]
+  `(r/resolve-fn '~(->> symb name (symbol "sputnik.satellite.server.scheduling"))))
+
+
+(defn+opts build-scheduling-fn
+  "Creates a scheduling function from the given strategy parameters.
+  Default values are used for undefined options.
+  <max-task-count-factor>Specifies the factor that determines the number of maximum tasks of a worker (`max-task-count-factor` * thread-count).</>
+  <worker-task-selection>Specifies the filter function that decides which workers get tasks in the current scheduling run.</>
+  <worker-ranking>Specifies the function that ranks the workers - better ranked workers get new tasks first</>
+  provided that the worker-task-selection decided to send them any tasks.</>
+  <task-stealing>Specifies a function that selects already assigned tasks that are send to other workers. (No task stealing is an option as well.)</>
+  <task-stealing-factor>Similar to the `max-task-count-factor` but applies only to task stealing.</>"
+  [|{max-task-count-factor nil, worker-task-selection nil, worker-ranking nil, task-stealing true, task-stealing-factor nil}]
+  (let [worker-task-selection (resolve-function "worker-task-selection", worker-task-selection, (from-scheduling-ns any-task-count-selection)),
+        worker-ranking        (resolve-function "worker-ranking",        worker-ranking,        (from-scheduling-ns faster-worker-ranking)),
+        task-stealing-fn      (if task-stealing (from-scheduling-ns steal-estimated-longest-lasting-tasks) (from-scheduling-ns no-task-stealing)),
+        max-task-count-factor (check-number "max-task-count-factor", max-task-count-factor, 2),
+        task-stealing-factor  (check-number "task-stealing-factor", task-stealing-factor,  2)]
+    (partial (from-scheduling-ns scheduling)
+      (partial (from-scheduling-ns n-times-thread-count-tasks) max-task-count-factor),
+      worker-task-selection,
+      worker-ranking,
+      (partial task-stealing-fn task-stealing-factor))))
+
+
 (defn+opts start-server
-  [hostname, nodename, port, init-scheduling-fn | :as options]
+  "Starts a sputnik server with the given settings.
+  <scheduling-timeout>Specifies the wait duration between scheduling runs in milliseconds.</>"
+  [hostname, nodename, port |{scheduling-timeout 100} :as options]
   (log/debugf "Server %s@%s:%s started with options: %s" nodename hostname port (prn-str options))
   (println (format "Server %s@%s:%s starts." nodename hostname port))
-  (let [; usage of a promise for server node so that the schedule agent is guaranteed to wait for a server node
-        server-node-promise (promise),
+  (let [init-scheduling-fn (build-scheduling-fn options),
+        continue-scheduling?-atom (atom true),
         server-node (node/start-node hostname, nodename, port, #(role/handle-message-checked handle-message, %1, %2, %3, handle-role-assigned), 
-                      :login-handler node-login, :logout-handler node-logout, :user-data (create-server-data init-scheduling-fn, server-node-promise), options)]
-    (deliver server-node-promise server-node)
+                      :login-handler node-login, :logout-handler node-logout, :user-data (create-server-data init-scheduling-fn, continue-scheduling?-atom, options), options)]
+    (start-scheduling server-node, scheduling-timeout)
     server-node))
 
 
@@ -187,8 +274,7 @@
   (let [{:keys [thread-count]} msg,
         worker-id (node/node-id worker-node)]
     (log/debugf "Worker %s send :worker-thread-info with thread-count = %s." (node/node-info worker-node) thread-count)
-    (mgmt/worker-thread-count (manager this-node), worker-id, thread-count)    
-    (scheduling! this-node)))
+    (mgmt/worker-thread-count (manager this-node), worker-id, thread-count)))
 
 
 
@@ -200,8 +286,7 @@
     ; ... then register the job and trigger scheduling ...
     (let [client-id (node/node-id remote-node)
           mgr (manager this-node)]
-      (mgmt/register-job mgr client-id, (:job msg))
-      (scheduling! this-node))
+      (mgmt/register-job mgr client-id, (:job msg)))
     ; ... else send error to the remote node.
     (send-error this-node, remote-node, :invalid-job-data, :no-task-data, 
 	    (format "Job %s does not contain any tasks!" (-> msg :job :job-id)))))
@@ -223,9 +308,7 @@
 	          ; send task results to the client
 	          (node/send-message client-node (protocol/tasks-completed-message non-duplicate-task-results))
 	          ; error: client disconnected
-	          (log/errorf "Tasks Completed: Client %s for completed tasks is not connected anymore!" client-id)))))
-    ; trigger scheduling
-    (scheduling! this-node)))
+	          (log/errorf "Tasks Completed: Client %s for completed tasks is not connected anymore!" client-id)))))))
 
 
 (defn worker-thread-setup

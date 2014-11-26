@@ -171,7 +171,15 @@
   
   :sputnik/server (config-level :sputnik
                     (config-level :server
-                      (option :scheduling-strategy, :scheduling)
+                      (config-level :scheduling
+                        (option :timeout :scheduling-timeout)
+                        (option :max-task-count-factor)
+                        (option :worker-task-selection)
+                        (option :worker-ranking)
+                        (option :task-stealing)
+                        (option :task-stealing-factor)
+                        (option :interval-duration :scheduling-performance-interval-duration)
+                        (option :interval-count    :scheduling-performance-interval-count))
                       (config-level :ui
                         (option :min-port, :min-ui-port)
                         (option :max-port, :max-ui-port)

@@ -6,19 +6,26 @@
 ; the terms of this license.
 ; You must not remove this notice, or any other, from this software.
 
-(ns sputnik.satellite.resolve
+(ns jppfnik-tools.functions
   (:require
-    [sputnik.tools.error :as e]))
-
+    [jppfnik-tools.errors :as e]))
 
 
 (def ^:private resolve-symbol-lock (Object.))
 
+
+(defn- ns-loaded?
+  [ns]
+  (get (loaded-libs) ns))
+
+
 (defn- provide-ns
   "Thread-safe version of (require ns)."
   [ns]
-  (locking resolve-symbol-lock
-    (require ns)))
+  (when-not (ns-loaded? ns)
+    (locking resolve-symbol-lock
+      (when-not (ns-loaded? ns)
+        (require ns)))))
 
 
 (defn resolve-fn
