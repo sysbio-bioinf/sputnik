@@ -25,6 +25,8 @@ Then you have to startup a REPL in the project jppfnik-control via leiningen.
 ```bash
 $ cd jppfnik-control
 $ lein repl
+```
+```clojure
 jppfnik-control.main=> (require 'jppfnik-control.launch)
 jppfnik-control.main=> (in-ns 'jppfnik-control.launch)
 jppfnik-control.launch=> (launch "resources/example_config.clj" :start-client false :deploy-client false)
