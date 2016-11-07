@@ -61,7 +61,7 @@ For [Leiningen](http://leiningen.org) add the following to your dependency vecto
 
 Latest on [clojars.org](http://clojars.org):
 
-[![Clojars Project](http://clojars.org/sputnik/latest-version.svg)](http://clojars.org/sputnik)
+[![Clojars Project](https://img.shields.io/clojars/v/sputnik.svg)](https://clojars.org/sputnik)
 
 ## Documentation
 
