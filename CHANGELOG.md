@@ -1,3 +1,13 @@
+# Changes from 0.4.0 to 0.5.1
+
+* Communication implemented via Netty (instead of Java RMI)
+* Configuration of multiple Sputnik workers, one for each NUMA node, on a single host
+* Worker reconnect strategy after server failure
+* Sputnik client REST service  (initially for parallelizing tuning with irace from R)
+* Equal-load scheduling (new default)
+* Parallelization using `sputnik.api/with-sputnik` and `sputnik.api/future` (experimental)
+* Bug fixes
+
 # Changes from 0.3.2 to 0.4.0
 
 * Faster scheduling of tasks

@@ -8,25 +8,25 @@
 
 (ns sputnik.satellite.main
   (:require
-    [sputnik.satellite.server :as server]    
+    [sputnik.satellite.server :as server]
     [sputnik.satellite.worker :as worker]
     [sputnik.satellite.client :as client]
     [sputnik.satellite.rest-client :as rest-client]
     [sputnik.satellite.ui.launch :as ui]
+    [sputnik.tools.threads :as threads]
     [sputnik.tools.resolve :as resolve]
     [sputnik.tools.logging :as log]
+    [sputnik.tools.file-system :as fs]
     [sputnik.version :as v]
     [sputnik.config.api :as cfg]
+    [clojure.options :refer [->option-map]]
     [clojure.string :as string]
     [clojure.java.io :as io]
+    [clojure.pprint :refer [pprint]]
+    [clojure.stacktrace :refer [print-cause-trace]]
     [clojure.tools.logging :refer [debug, error, *force*]]
     [clojure.tools.cli :as cli]
-    [txload.core :as tx])
-  (:use
-    [clojure.main :only [repl]]
-    [clojure.stacktrace :only [print-cause-trace]]
-    [clojure.pprint :only [pprint]]
-    [clojure.options :only [->option-map]]))
+    [txload.core :as tx]))
 
 
 (defn launch-web-ui
@@ -35,19 +35,21 @@
 
 
 (defn start-server-with-config
-  [{:keys [hostname, nodename, registry-port, scheduling-strategy] :as options}]
-  (let [server-node (server/start-server hostname, nodename, registry-port, (->option-map options))
+  [{:keys [hostname, port, scheduling-strategy] :as options}]
+  (let [server-node (server/start-server hostname, port, (->option-map options))
         web-server (launch-web-ui server-node, options)] 
     (doto server-node
       (server/set-web-server web-server))))
 
 
 (defn start-worker-with-config
-  [{:keys [hostname, nodename, registry-port, server-hostname, server-nodename, server-registry-port, thread-count, cpus] :as options}]  
-  (worker/start-worker
-    hostname, nodename, registry-port, server-hostname, server-nodename, server-registry-port
+  [{:keys [server-hostname, server-port, thread-count, cpus] :as options}]  
+  (worker/start-worker server-hostname, server-port
     :worker-thread-count (or thread-count cpus),
-   (->option-map options)))
+   (->option-map options))
+  ; workaround: keep worker alive otherwise it could shutdown ... (better solution via non-daemon threads)
+  (while true
+    (Thread/sleep 60000)))
 
 
 (defn build-job-setup-function
@@ -60,10 +62,10 @@
 (defn start-client-with-config
   ([options]
     (start-client-with-config options, false))
-  ([{:keys [hostname, nodename, registry-port, server-hostname, server-nodename, server-registry-port] :as options}, main?]
+  ([{:keys [server-hostname, server-port] :as options}, main?]
     (client/start-automatic-client
-      hostname, nodename, registry-port, server-hostname, server-nodename, server-registry-port
-	    (build-job-setup-function options)
+      server-hostname, server-port,
+	    (build-job-setup-function options),
 	    (->option-map options))
     (when main?
       (Thread/sleep 1000)
@@ -74,9 +76,8 @@
 (defn start-rest-client-with-config
   ([options]
     (start-rest-client-with-config options, false))
-  ([{:keys [hostname, nodename, registry-port, rest-port, server-hostname, server-nodename, server-registry-port] :as options}, main?]
-    (rest-client/start-rest-client
-      hostname, nodename, registry-port, rest-port, server-hostname, server-nodename, server-registry-port, (->option-map options))
+  ([{:keys [rest-port, server-hostname, server-port] :as options}, main?]
+    (rest-client/start-rest-client rest-port, server-hostname, server-port, (->option-map options))
     (when main?
       (Thread/sleep 1000)
       (shutdown-agents)
@@ -107,9 +108,9 @@
 
 
 (defn- setup-logging
-  [node-type, {:keys [hostname, nodename, registry-port] :as options}]
+  [{:keys [log-file, nickname, numa-id] :as options}]
   (log/configure-logging
-    :filename (format "%s-%s-%s-%s.log" (name node-type) nodename hostname registry-port)
+    :filename (or log-file (format "%s.log" (worker/node-name nickname, numa-id)))
     (->option-map options)))
 
 
@@ -133,22 +134,32 @@
   [& args]
   (try
     (let [{:keys [options, arguments, summary, errors]} (cli/parse-opts args, cli-options),
-          {:keys [help, version, type]} options]      
+          {:keys [help, version, type]} options,
+          config-file (cond
+                        (or (nil? arguments) (not= (count arguments) 1))
+                          (do
+                            (println "ERROR: You need to specify exactly one config file to start a sputnik node.")
+                            (print-usage summary, 1))                        
+                        (not (fs/exists? (first arguments)))
+                          (do
+                            (println (format "There is no config file named \"%s\"!" (first arguments)))
+                            (print-usage summary, 1))
+                        :else
+                          (first arguments))]      
 	    (cond
         errors (do
                  (doseq [err-msg errors] (println err-msg))
                  (print-usage summary, 1))
 	      help (print-usage summary)
         version (println (format "Sputnik Satellite (Sputnik %s)" (v/sputnik-version)))
-        (or (nil? arguments) (not= (count arguments) 1)) (do
-                                                           (println "ERROR: You need to specify one config file to start a sputnik node.")
-                                                           (print-usage summary, 1))
         (not (#{:server :worker :client :rest-client} type)) (do (println (format "ERROR: The node type can only be one of \"worker\", \"server\", \"client\" or \"rest-client\" and not \"%s\"!" (name type)))
                                                                (print-usage summary, 1))
-        type (let [config-url (first arguments),
-                   config (read-config config-url)
-                   options (cfg/node-options type, config)] (println "config:") (pprint config) (println "options:") (pprint options)
-               (setup-logging type, options)
+        type (let [config (read-config config-file)
+                   options (cfg/node-options type, config)]
+               (setup-logging options)
+               (threads/setup-default-thread-exception-handler!)
+               (when (= type :worker)
+                 (threads/replace-agent-thread-pools!))
                (binding [*force* :agent]
                  (debug (format "Read config:\n%s" (with-out-str (pprint config))))
                  (debug (format "Config decoded to option map:\n%s" (with-out-str (pprint options))))

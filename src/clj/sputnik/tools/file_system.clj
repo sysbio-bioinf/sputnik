@@ -21,7 +21,7 @@
   [f]
   (if (instance? File f)
     (.exists ^File f)
-    (-> f io/file .exists)))
+    (some-> f io/file .exists)))
 
 
 (defn file?
@@ -63,6 +63,35 @@
     (when possible-directory
       (io/resource (io/as-relative-path (io/file possible-directory url))))
     (io/resource url)))
+
+
+(defn shrinked-paths
+  [url]
+  (let [file-path (-> url io/file .toPath)]
+    (loop [parent-path (.getParent file-path), shrinked (list)]
+      (if parent-path
+        (recur (.getParent parent-path), (conj shrinked (.relativize parent-path, file-path)))
+        (vec shrinked)))))
+
+
+(defn search-file
+  "Search file corresponding to the given url.
+  The search order is as follows:
+  1. Search the exact location given by the url.
+  2. Search a resource on the classpath given by the url.
+  3. Search the path resulting from incrementally removing the root folder."
+  [url]
+  (let [f (io/file url)]
+    (or
+      (when (.exists f) f)
+      (io/resource url)
+      (reduce
+        (fn [_, path]
+          (let [f (.toFile ^java.nio.file.Path path)]
+            (when (.exists f)
+              (reduced f))))
+        nil
+        (shrinked-paths url)))))
 
 
 (defn join-directory-urls

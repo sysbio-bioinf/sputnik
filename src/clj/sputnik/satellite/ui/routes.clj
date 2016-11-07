@@ -34,12 +34,16 @@
       (views/worker-thread-setup server-node, worker-id, thread-count)
       (r.u.response/redirect "/admin"))
     
-    (POST "/clear-finished-jobs" []
-      (views/clear-finished-jobs server-node)
+    (POST "/worker/:worker-id/shutdown" [worker-id :as request]
+      (views/worker-shutdown server-node, worker-id, request)
       (r.u.response/redirect "/admin"))
     
-    (POST "/export-worker-task-durations" []
-      (views/export-worker-task-durations server-node)
+    (POST "/shutdown-workers" request
+      (views/shutdown-workers server-node, request)
+      (r.u.response/redirect "/admin"))
+    
+    (POST "/clear-finished-jobs" []
+      (views/clear-finished-jobs server-node)
       (r.u.response/redirect "/admin"))
     
     (GET "/exceptions" request (views/exceptions server-node))

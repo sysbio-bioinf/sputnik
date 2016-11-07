@@ -8,11 +8,9 @@
 
 (ns sputnik.satellite.server.management
   (:require
-    [clojure.set :as set]
     [clojure.options :refer [defn+opts]]
-    [frost.quick-freeze :as qf]
     [sputnik.satellite.protocol :as protocol]
-    [sputnik.satellite.server.performance-data :as pd]))
+    [sputnik.tools.performance-data :as pd]))
 
 
 (deftype TaskDuration [^long start, ^long end, ^long duration, ^double efficiency, ^long threadid])
@@ -28,7 +26,12 @@
   (client-connected [this, client-id, client-info])
   (register-job [this, client-id, job-data])
   (client-disconnected [this, client-id])
+  (worker-nicknames [this])
+  (worker-nickname [this, worker-id])
+  (worker-exists? [this, worker-id])
+  (worker-connected? [this, worker-id])
   (worker-connected [this, worker-id, worker-info])
+  (worker-reconnected [this, worker-id])
   (worker-thread-count [this, worker-id, thread-count])
   (worker-disconnected [this, worker-id])  
   (assign-task [this, task-key, worker-id, assignment-timestamp])
@@ -38,23 +41,24 @@
   (task-assignment-map [this])
   (unfinished-task-map [this])
   (rated-workers [this, rating-period, connected-only?])
+  (connected-workers [this])
   (job-performance-data-map [this, rating-period])
   (rating-period-map [this])
   (client-data-map [this])  
   (worker+finished-tasks [this, finished-tasks])
-  (remove-finished-job-data [this])
-  (worker-task-durations [this]))
+  (remove-finished-job-data [this]))
 
 
 
 (defn- register-job*
   [client-job-data-map, unfinished-task-map, unassigned-task-queue, client-id, {:keys [job-id, tasks]}]
-  (let [tasks (mapv #(assoc % :client-id client-id, :job-id job-id) tasks)
+  (let [now (System/currentTimeMillis)
+        tasks (mapv #(assoc % :client-id client-id, :job-id job-id) tasks)
         unfinished-tasks (mapv (fn [t] [(protocol/create-task-key t) t]) tasks)]
     (dosync
       ; store job data per client
       (alter client-job-data-map
-        assoc-in [client-id :jobs job-id] {:task-count (count tasks), :finished-task-count 0, :durations [], :exceptions [] :finished false})
+        assoc-in [client-id :jobs job-id] {:task-count (count tasks), :finished-task-count 0, :register-time now, :exceptions [] :finished false})
       ; add tasks to the unfinished task map
       (alter unfinished-task-map into unfinished-tasks)
       ; add tasks to the unassigned task queue
@@ -107,6 +111,35 @@
     (dosync
       (alter client-job-data-map update-in [client-id] assoc :connected false, :disconnect-time now))))
 
+
+(defn- worker-nicknames*
+  [worker-task-data-map]
+  (persistent!
+    (reduce-kv
+      (fn [result-vec, _, {:keys [worker-info]}]
+        (conj! result-vec worker-info))
+      (transient [])
+      @worker-task-data-map)))
+
+
+(defn- worker-nickname*
+  [worker-task-data-map, worker-id]
+  (-> worker-task-data-map
+    deref
+    (get worker-id)
+    :worker-info))
+
+
+(defn- worker-exists?*
+  [worker-task-data-map, worker-id]
+  (contains? @worker-task-data-map worker-id))
+
+
+(defn- worker-connected?*
+  [worker-task-data-map, worker-id]
+  (:connected (get @worker-task-data-map worker-id)))
+  
+
 (defn- worker-connected*
   [worker-task-data-map, worker-id, worker-info]
   (dosync
@@ -117,8 +150,18 @@
 	        ; ... then just mark it as connected again ...
 	        (-> m (assoc-in [worker-id :connected] true) (assoc-in [worker-id :disconnect-time] nil))
 	        ; ... else create a new map for it
-	        (assoc m worker-id {:connected true, :worker-info worker-info, :assigned-tasks {}, :durations [], :disconnect-time nil}))))))
-  
+	        (assoc m worker-id {:connected true, :worker-info worker-info, :assigned-tasks {}, :disconnect-time nil}))))))
+
+
+(defn- worker-reconnected*
+  [worker-task-data-map, worker-id]
+  (dosync
+    (alter worker-task-data-map
+	    (fn [m]
+       ; mark worker as connected again
+       (-> m (assoc-in [worker-id :connected] true) (assoc-in [worker-id :disconnect-time] nil))))))
+
+
 (defn- worker-thread-count*
   [worker-task-data-map, worker-id, thread-count]
   (dosync
@@ -173,7 +216,7 @@
 	                              persistent!)]
 	          ; requeue tasks
 	          (alter unassigned-task-queue into requeue-tasks)))
-	      ; update worker state: no assigned task and not connected (but keep durations)
+	      ; update worker state: no assigned task and not connected
 	      (alter worker-task-data-map update-in [worker-id] assoc :assigned-tasks {}, :connected false, :disconnect-time now)))))
 
 
@@ -247,51 +290,6 @@
     not-duplicate?))
 
 
-(defn duration-in-interval
-  [^TaskDuration td, interval-start, interval-end]
-  (if (<= interval-start (.start td))
-    (if (<= (.end td) interval-end)
-      (.duration td)
-      (when (<= (.start td) interval-end)
-        (- interval-end (.start td))))
-    (when (<= interval-start (.end td) interval-end)
-      (- (.end td) interval-start))))
-
-(defn computation-statistics
-  ([durations]
-    (computation-statistics durations, 0, Long/MAX_VALUE))
-  ([durations, interval-start, interval-end]
-    (when (seq durations)
-	    (let [n (count durations)]
-	      (loop [i 0, tasks-in-interval 0, duration-sum 0.0, task-completion 0.0, min-start Long/MAX_VALUE, max-end 0, efficiency-sum 0.0, cputime-sum 0.0]
-          (if (< i n)            
-            (let [^TaskDuration td (durations i),
-                  d (duration-in-interval td, interval-start, interval-end)]
-              (if d
-                (recur 
-                  (inc i),
-                  (inc tasks-in-interval),
-                  (+ duration-sum d),
-                  (+ task-completion (/ (double d) (.duration td))),
-                  (min min-start (.start td)), (max max-end (.end td))
-                  (+ efficiency-sum (.efficiency td)),
-                  (+ cputime-sum (* (.efficiency td) d))) 
-                (recur (inc i), tasks-in-interval, duration-sum, task-completion, min-start, max-end, efficiency-sum, cputime-sum)))
-            (let [b (max min-start interval-start),
-                  e (min max-end interval-end)]
-              (when (< b e)
-                {:interval-begin b,
-                 :interval-end e,
-                 :avg-concurrency (/ duration-sum (- e b)),
-                 :avg-duration (/ duration-sum task-completion),
-                 :avg-computation-speed (/ task-completion (- e b)),
-                 :task-completion task-completion,
-                 :avg-efficiency (/ efficiency-sum tasks-in-interval),
-                 :tasks-in-interval tasks-in-interval,
-                 :cputime-sum cputime-sum,
-                 :avg-parallelism (/ cputime-sum (- e b))}))))))))
-
-
 (defn- select-workers
   [worker-task-data-map, connected-only?]
   (dosync
@@ -313,10 +311,15 @@
       ; both :assigned-tasks and :assigned-task-count is needed in scheduling
       (assoc worker-data
         :assigned-task-count (count assigned-tasks),
-        :selected-period-performance-data (pd/period-computation-performance-of worker-performance-data, worker-id, rating-period)
-        :maximal-period-performance-data  (pd/period-computation-performance-of worker-performance-data, worker-id)
-        :total-performance-data           (pd/total-computation-performance-of  worker-performance-data, worker-id)))
+        :selected-period-performance-data (when worker-id (pd/period-computation-performance-of worker-performance-data, worker-id, rating-period))
+        :maximal-period-performance-data  (when worker-id (pd/period-computation-performance-of worker-performance-data, worker-id))
+        :total-performance-data           (when worker-id (pd/total-computation-performance-of  worker-performance-data, worker-id))))
     (select-workers worker-task-data-map, connected-only?)))
+
+
+(defn- connected-workers*
+  [worker-task-data-map]
+  (select-workers worker-task-data-map, true))
 
 
 (defn- job-performance-data-map*
@@ -341,24 +344,13 @@
         worker-task-data-map))))
 
 
-(defn- worker-task-durations*
-  [worker-task-data-map]
-  (let [worker-task-data-map (dosync @worker-task-data-map)]
-    (->> worker-task-data-map
-      (reduce-kv
-        (fn [m, worker-id, {:keys [durations]}]
-          (assoc! m worker-id (mapv task-duration->map durations)))
-        (transient {}))
-      persistent!)))
-
-
 ; data layout:
 ;  * client-job-data-map
 ;     - type: (ref {})
 ;     - key-levels: client-id
 ;     - values: :connected (boolean), :jobs (map, see below)
 ;     - key-levels: client-id, :jobs, job-id
-;     - values: :task-count (integer), :finished-task-count (integer), :finished (boolean), :exceptions (vector of vectors: [task-id exception])
+;     - values: :task-count (integer), :finished-task-count (integer), :finished (boolean), :register-time (integer) :exceptions (vector of vectors: [task-id exception])
 ;
 ;  * unfinished-task-map
 ;     - type: (ref {})
@@ -402,8 +394,24 @@
   (client-disconnected [this, client-id]
     (client-disconnected* client-job-data-map, client-id))
   
+  (worker-nicknames [this]
+    (worker-nicknames* worker-task-data-map))
+  
+  (worker-nickname [this, worker-id]
+    (worker-nickname* worker-task-data-map, worker-id))
+  
+  (worker-exists? [this, worker-id]
+    (worker-exists?* worker-task-data-map, worker-id))
+  
+  (worker-connected? [this, worker-id]
+    (worker-connected?* worker-task-data-map, worker-id))
+  
   (worker-connected [this, worker-id, worker-info]
     (worker-connected* worker-task-data-map, worker-id, worker-info)
+    this)
+  
+  (worker-reconnected [this, worker-id]
+    (worker-reconnected* worker-task-data-map, worker-id)
     this)
   
   (worker-thread-count [this, worker-id, thread-count]
@@ -436,6 +444,9 @@
   (rated-workers [this, rating-period, connected-only?]
     (rated-workers* worker-task-data-map, worker-performance-data, rating-period, connected-only?))
   
+  (connected-workers [this]
+    (connected-workers* worker-task-data-map))
+  
   (client-data-map [this]
     (dosync @client-job-data-map))
   
@@ -449,10 +460,7 @@
     (worker+finished-tasks* finished-tasks, worker-task-data-map))
 
   (remove-finished-job-data [this]
-    (remove-finished-job-data* client-job-data-map))
-  
-  (worker-task-durations [this]
-    (worker-task-durations* worker-task-data-map)))
+    (remove-finished-job-data* client-job-data-map)))
 
 
 ;(defn- task-assignment-map-validator
@@ -479,8 +487,3 @@
       (ref {} :min-history 15 :max-history 50), (ref {}), (ref clojure.lang.PersistentQueue/EMPTY), (ref {}), (ref {}),
       (pd/create-entity-performance-data interval-duration, interval-count, now),
       (pd/create-entity-performance-data interval-duration, interval-count, now))))
-
-
-(defn export-worker-task-durations
-  [filename, manager]
-  (qf/quick-file-freeze filename, (worker-task-durations manager)))

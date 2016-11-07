@@ -62,9 +62,17 @@
 
 ; task & job
 
+(defn create-task*
+  ([task-id, execute-fn, param-data-list]
+    {:task-id task-id, :task-type :single-task, :function execute-fn, :data (vec param-data-list)}))
+
 (defn create-task
   ([task-id, execute-fn, & param-data]
     {:task-id task-id, :task-type :single-task, :function execute-fn, :data (vec param-data)}))
+
+(defn create-task-with-info
+  ([task-id, task-info, execute-fn, & param-data]
+   {:task-id task-id, :task-type :single-task, :task-info task-info, :function execute-fn, :data (vec param-data)}))
 
 (defn conj-task-data
   ([task, data-1]
@@ -99,13 +107,16 @@
 
 ; server
 
+(defmessage worker-id-response [:server] unique-id actual-nickname)
 (defmessage task-distribution [:server] tasks)
 (defmessage worker-thread-setup [:server] thread-count)
 (defmessage finished-task-notfication [:server] finished-task-keys)
+(defmessage worker-shutdown [:server] now?)
 
 ; worker
 
 (defmessage worker-thread-info [:worker] thread-count)
+(defmessage worker-id-request [:worker] nickname, unique-id)
 
 ; worker & server
 (defmessage tasks-completed [:worker :server] finished-tasks)

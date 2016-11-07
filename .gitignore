@@ -18,9 +18,10 @@ Solomon
 *.csv
 *.txt
 *.log
-*.log.[0-9]
+*.log.[0-9]+
 .lein-deps-sum
 .lein-failures
 .lein-plugins
 .lein-repl-history
 .*.md.html
+/sputnik-*

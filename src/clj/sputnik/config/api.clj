@@ -97,8 +97,7 @@
   [config-type, config-map]
   (->> config-map    
     (filter #(= (meta/config-type (key %)) config-type))
-    (mapv val)
-    #_(mapv #(assoc (val %) :sputnik/config-id (key %)))))
+    (mapv val)))
 
 
 (defn use-communication
@@ -109,15 +108,17 @@
 
 (defn use-server
   "Add server information to the given node."
-  [{{server-address :address, server-name :name} :host,  {:keys [registry-port]} :options, :as server}, node]
-  (update-in node [:options] merge
-    {:server-hostname server-address,
-     :server-nodename server-name,
-     :server-registry-port registry-port}))
+  [{{server-address :address} :host,  {:keys [sputnik-port]} :options, :as server}, node]
+  (update-in node [:options]
+    #(-> %
+       (dissoc :hostname)
+       (merge
+         {:server-hostname server-address,
+          :server-port sputnik-port}))))
 
 
 (defn prepare-client-job
-  "For the given client the job configuration is transformed to the needed :job-setup-fn and j:ob-setup-args key value pairs-"
+  "For the given client the job configuration is transformed to the needed :job-setup-fn and :job-setup-args key value pairs-"
   [{{:keys [job]} :options, :as client}]
   (when-not job
     (throw (IllegalArgumentException. (str "The selected client needs a job! Otherwise it is pointless to launch a client! Client: " (pr-str client)))))

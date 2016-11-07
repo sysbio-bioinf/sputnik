@@ -28,15 +28,18 @@ Distributed computation scenario of Sputnik.
   * configuration of workers, server, communication, ... 
   * deployment of necessary files
   * start of server and workers
+* Multiple workers per host, each assigned to a different NUMA node
+* Sputnik client REST service for access from different programming platforms (e.g. tuning via irace from R)
 
 ## Project Maturity
 
 The core library has been used in internal projects for more than a year running parallel experiments lasting from several hours to multiple days.
 The graphical user interface for configuration of the Sputnik nodes and deployment is rather new.
+Sputnik has been used in production on Java 7 and Java 8.
 
 ## Requirements
 
-**It is recommended to use Java 7 for Sputnik.**
+**It is recommended to use Java 7 (or newer versions of Java) for Sputnik.**
 For security reasons Sputnik only allows the usage of TLSv1.1 and TLSv1.2 for
 the encryption of the internal communication and the web user interface of the server.
 Java 7 is the first release to support both TLSv1.1 and TLSv1.2.
@@ -46,14 +49,14 @@ Since it supports TLSv1.1, Java 6 might be usable for Sputnik as well (but is no
 
 ## Releases
 
-The latest release is [Sputnik 0.4.0](../../releases/tag/v0.4.0).
+The latest release is [Sputnik 0.5.1](../../releases/tag/v0.5.1).
 
 ## Install
 
 For [Leiningen](http://leiningen.org) add the following to your dependency vector in your project.clj:
 
 ```clojure
-[sputnik "0.4.0"]
+[sputnik "0.5.1"]
 ```
 
 Latest on [clojars.org](http://clojars.org):
@@ -80,6 +83,6 @@ The implementation using the [JPPF framework](http://www.jppf.org) to compare it
 
 ## License
 
-Copyright © 2014 Gunnar Völkel
+Copyright © 2014-2016 Gunnar Völkel
 
 Sputnik is distributed under the Eclipse Public License.

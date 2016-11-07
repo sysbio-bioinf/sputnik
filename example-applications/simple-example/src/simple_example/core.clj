@@ -8,8 +8,9 @@
 
 (ns simple-example.core
   (:require
-    [sputnik.satellite.protocol :as p]
-    [sputnik.satellite.client :as c]))
+    [clojure.java.io :as io]
+    [clojure.options :refer [defn+opts]]
+    [sputnik.api :as s]))
 
 
 (defn in-unit-circle?
@@ -30,8 +31,8 @@
   (let [rnd (java.util.Random. (long seed))]
     (loop [i 0, in-circle 0]
       (if (< i point-count)
-        (let [x (.nextDouble rnd),
-              y (.nextDouble rnd)]
+        (let [x (rand-coordinate rnd) #_(.nextDouble rnd),
+              y (rand-coordinate rnd) #_(.nextDouble rnd)]
           (recur
             (unchecked-inc i),
             (if (in-unit-circle? x, y)
@@ -40,6 +41,26 @@
         {:in-circle in-circle, :point-count point-count}))))
 
 
+(defn sample-points-list
+  [seed, point-count]
+  (let [rnd (java.util.Random. (long seed))]
+    (loop [i 0, points (transient [])]
+      (if (< i point-count)
+        (let [x (rand-coordinate rnd),
+              y (rand-coordinate rnd)]
+          (recur
+            (unchecked-inc i),
+            (conj! points [x, y, (in-unit-circle? x, y)])))
+        (persistent! points)))))
+
+
+(defn export-sample-points-tex
+  [filename, seed, point-count]
+  (with-open [f (io/writer filename)]
+    (binding [*out* f]
+      (doseq [[x, y, in-circle?] (sample-points-list seed, point-count)]
+        (println (format "\\node[point%s] at (%.3f,%.3f) {};" (if in-circle? ",incircle" "") x, y))))))
+
 
 
 (defn create-job
@@ -47,22 +68,38 @@
   Each task will randomly generate the given number of points."
   [seed, task-count, point-count-per-task]
   (let [rnd (java.util.Random. (long seed))]
-    (p/create-job (System/currentTimeMillis),
+    (s/create-job (System/currentTimeMillis),
       (mapv
-        #(p/create-task %, `sample-points, (.nextLong rnd), point-count-per-task)
+        #(s/create-task %, `sample-points, (.nextLong rnd), point-count-per-task)
         (range task-count)))))
 
 
 
-(defn estimate-pi
-  [config-url, seed, task-count, point-count-per-task, progress?]
+(defn+opts estimate-pi
+  [seed, task-count, point-count-per-task | {progress? false} :as options]
   ; create client from configuration file
-  (with-open [^java.io.Closeable client (c/create-client-from-config config-url)]
+  (with-open [^java.io.Closeable client (s/create-client options)]
     ; execute the pi estimation job and wait for its results
-    (let [task-results (c/compute-job client, (create-job seed, task-count, point-count-per-task), :print-progress progress?),
+    (let [task-results (s/compute-job client, (create-job seed, task-count, point-count-per-task), :print-progress progress?),
           in-circle-total (reduce + (mapv :in-circle task-results))]
       (when progress?
         (Thread/sleep 1000)
         (shutdown-agents))
       (println "Estimate of pi:" (/ (* 4.0 in-circle-total) (* task-count point-count-per-task)))
       (flush))))
+
+
+
+(defn+opts estimate-pi-new
+  [seed, task-count, point-count-per-task | {progress? false} :as options]
+  ; create client from configuration file
+  (let [rnd (java.util.Random. (long seed)),
+        in-circle-total (->> (repeatedly task-count #(.nextLong rnd))
+                          (mapv
+                            (fn [seed]
+                              (s/future (sample-points seed, point-count-per-task))))
+                          (reduce
+                            (fn [in-circle-total, result]
+                              (+ in-circle-total (:in-circle (deref result))))
+                            0))]
+    (println "Estimate of pi:" (/ (* 4.0 in-circle-total) (* task-count point-count-per-task)))))

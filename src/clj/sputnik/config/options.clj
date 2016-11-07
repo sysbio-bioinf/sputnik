@@ -130,20 +130,16 @@
 
   :node (config-level :sputnik
           (config-level :node
-            (option :registry-port)
-            (option :node-port)
-            (option :nodename)
-            (option :hostname)
             (option :cpus)
             (option :alive-check-timeout)
             (config-level :server
-              (option :server-hostname :server-hostname :hostname)
-              (option :server-nodename :server-nodename :nodename)
-              (option :server-registry-port :server-registry-port :registry-port)))),
+              (option :server-hostname :server-hostname :hostname)              
+              (option :server-port :server-port :port)))),
   
   
   :logging (config-level :sputnik
              (config-level :logging
+               (option :log-file, :log-file, :file)
                (option :log-level, :log-level, :level)
                (option :max-size, :max-log-size)
                (option :backup-count, :log-backup-count)
@@ -154,8 +150,8 @@
                    (config-level :communication
                      (option :comm-thread-count, :comm-thread-count, :thread-count)
                      (config-level :buffer
-                       (option :init, :buffer-init)
-                       (option :max,  :buffer-max))
+                       (option :init, :initial-buffer)
+                       (option :max,  :max-buffer))
                      (config-level :compression
                        (option :compression-enabled, :compressed, :enabled)
                        (option :nowrap,  :no-wrap)
@@ -171,7 +167,10 @@
   
   :sputnik/server (config-level :sputnik
                     (config-level :server
+                      (option :hostname)
+                      (option :port, :sputnik-port, :port)
                       (config-level :scheduling
+                        (option :strategy :scheduling-strategy)
                         (option :timeout :scheduling-timeout)
                         (option :max-task-count-factor)
                         (option :worker-task-selection)
@@ -189,6 +188,8 @@
   
   :sputnik/worker (config-level :sputnik
                     (config-level :worker
+                      (option :nickname)
+                      (option :numa-id)
                       (option :thread-count, :worker-threads)
                       (option :send-result-timeout)
                       (option :max-results-to-send)
@@ -201,5 +202,7 @@
   
   :sputnik/rest-client (config-level :sputnik
                          (config-level :rest-client
-                           (option :rest-port)))
+                           (option :rest-port)
+                           (option :service-user :service-user :user)
+                           (option :service-password :service-password :password)))
 )

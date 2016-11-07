@@ -9,11 +9,10 @@
 (ns sputnik.satellite.ui.views
   (:require
     [sputnik.version :as v]
-    [sputnik.satellite.node :as node]
     [sputnik.satellite.role-based-messages :as r]
     [sputnik.satellite.server :as server]
     [sputnik.satellite.server.management :as mgmt]
-    [sputnik.satellite.server.performance-data :as pd]
+    [sputnik.tools.performance-data :as pd]
     [sputnik.tools.format :as fmt]
     [sputnik.tools.file-system :as fs]
     [clojure.pprint :as pp]
@@ -78,12 +77,13 @@
   [server-node, rating-period]
   (let [mgr (server/manager server-node),
         rated-workers (mgmt/rated-workers mgr, rating-period, false)]
-    (mapv
-      (fn [{:keys [worker-id] :as worker-data}]
-        (let [worker-node (node/get-remote-node server-node worker-id)]
-          (assoc worker-data
-            :last-active (when worker-node (node/last-activity worker-node)))))
-      rated-workers)))
+    rated-workers
+    #_(mapv
+       (fn [{:keys [worker-id] :as worker-data}]
+         (let [worker-node (node/get-remote-node server-node worker-id)]
+           (assoc worker-data
+             :last-active nil (when worker-node (node/last-activity worker-node)))))
+       rated-workers)))
 
 
 (defn- maybe-add
@@ -167,19 +167,52 @@
 
 
 (defn server-summary-data
-  [rated-worker-coll, client-data]  
+  [rated-worker-coll, client-data]
   (merge
-    {:worker-count (count rated-worker-coll),
+    {:worker-count (reduce (fn [n, {:keys [connected]}] (cond-> n connected inc)) 0 rated-worker-coll),
      :total-performance-data
        (pd/aggregate-performance-data (mapv :total-performance-data rated-worker-coll)),
      :selected-period-performance-data
        (pd/aggregate-performance-data (mapv :selected-period-performance-data rated-worker-coll)),
+     :thread-count (reduce
+                     (fn [n, worker]
+                       (cond-> n (:connected worker) (+ (:thread-count worker))))
+                     0
+                     rated-worker-coll)
      :client-count (count client-data)}
     ; client attribute calculation unchanged (18.11.2014) because it is not performance critical
     (aggregate-properties client-data, "total-"
       [:task-count nil maybe-add],
       [:finished-task-count nil maybe-add],
-      [:job-count nil maybe-add])))
+      [:job-count nil maybe-add]
+      [:exception-count 0 +])))
+
+
+(defn jobs-progress-data
+  [job-map]
+  (reduce-kv
+    (fn [{:keys [active-jobs-task-count, active-jobs-finished-task-count, total-task-count, total-finished-task-count, exception-count] :as result},
+         job-id,
+         {:keys [task-count, finished-task-count, exceptions]}]
+      (cond-> result
+        true
+          (assoc :exception-count (+ exception-count (count exceptions)))
+        task-count
+          (assoc
+            :total-task-count
+            (if total-task-count (+ total-task-count task-count) task-count))
+        finished-task-count
+          (assoc
+            :total-finished-task-count
+            (if total-finished-task-count (+ total-finished-task-count finished-task-count) finished-task-count))
+        (and task-count finished-task-count (< finished-task-count task-count))
+          (assoc
+            :active-jobs-task-count
+            (if active-jobs-task-count (+ active-jobs-task-count task-count) task-count),
+            :active-jobs-finished-task-count
+            (if active-jobs-finished-task-count (+ active-jobs-finished-task-count finished-task-count) finished-task-count))))
+    {:exception-count 0}
+    job-map))
 
 
 ; client data calculation unchanged (18.11.2014) because it is not performance critical
@@ -189,43 +222,56 @@
     (->> (mgmt/client-data-map mgr)
       (reduce-kv
         (fn [result, client-id, {:keys [jobs] :as client-data}]
-          (let [client-node (node/get-remote-node server-node client-id)]
-            (let [task-count (reduce-kv #(+ %1 (:task-count %3)) 0 jobs),
-                  finished-task-count (reduce-kv #(+ %1 (:finished-task-count %3)) 0 jobs)]
-              (conj! result
-                (assoc client-data
-                  :client-id client-id,
-                  :job-count (count jobs),
-	                :task-count task-count,
-	                :finished-task-count finished-task-count,
-                  :progress (/ (double finished-task-count) task-count),
-                  :last-active (when client-node (node/last-activity client-node)))))))
+          (let [{:keys [total-task-count, total-finished-task-count, active-jobs-task-count, active-jobs-finished-task-count, exception-count]}
+                (jobs-progress-data jobs)]
+            (conj! result
+              (assoc client-data
+                :client-id client-id,
+                :job-count (count jobs),
+                :exception-count exception-count,
+                :task-count total-task-count,
+                :finished-task-count total-finished-task-count,
+                :active-jobs-task-count active-jobs-task-count,
+                :active-jobs-finished-task-count active-jobs-finished-task-count,
+                :progress (cond
+                            (and active-jobs-task-count, active-jobs-finished-task-count)
+                              (/ (* 100.0 active-jobs-finished-task-count) active-jobs-task-count)
+                            (and total-task-count, total-finished-task-count)
+                              (/ (* 100.0 total-finished-task-count) total-task-count))))))
         (transient []))
       persistent!)))
 
+
 (defn exception-data
   [server-node]
-  (for [[_ {:keys [jobs]}] (-> server-node server/manager mgmt/client-data-map), [_ {:keys [exceptions]}] jobs, e exceptions]
-    e))
+  (persistent!
+    (reduce-kv
+      (fn [exception-list, _, {:keys [jobs] :as client-data}]
+        (reduce-kv
+          (fn [exception-list, _, {:keys [exceptions]}]
+            (reduce conj! exception-list exceptions))
+          exception-list
+          jobs))
+      (transient [])
+      (-> server-node server/manager mgmt/client-data-map))))
 
 
 (defn add-estimations
   [now, job-data, computation-performance-data]
-  (if computation-performance-data
+  (when computation-performance-data
     (let [{:keys [task-count, finished-task-count]} job-data,
           mean-speed (pd/performance-attribute computation-performance-data, :mean-speed),
           estimated-duration (/ (- task-count finished-task-count) mean-speed)]
       (assoc (pd/computation-performance->map computation-performance-data)
         :estimated-duration estimated-duration
-        :estimated-end (+ now estimated-duration)))
-    computation-performance-data))
+        :estimated-end (+ now estimated-duration)))))
 
 
 (defn extract-job-attributes
   [job-performance-data-map, now, client-id, job-id, {:keys [task-count, finished-task-count, durations, exceptions] :as job-data}]
   (let [{:keys [period-computation-performance-map, total-computation-performance-map]} job-performance-data-map,
         job-key [client-id, job-id]]
-    (assoc (select-keys job-data [:task-count, :finished-task-count, :finished])
+    (assoc (select-keys job-data [:task-count, :finished-task-count, :finished, :register-time])
 	     :job-id job-id,
 		   :progress (/ (double finished-task-count) task-count),
        :exception-count (count exceptions),
@@ -289,53 +335,73 @@
 (defn- render-worker-row
   [{:keys [thread-count, assigned-task-count, worker-info, worker-id, last-active, connected, disconnect-time,
            selected-period-performance-data, total-performance-data]},
-   time-unit]
+   time-unit, connected?]
   (let [total-performance-data           (pd/computation-performance->map total-performance-data),
         selected-period-performance-data (pd/computation-performance->map selected-period-performance-data)
         extract-attribute (fn [attribute-kw] (map attribute-kw [total-performance-data, selected-period-performance-data]))]
-    (table-row 
-      worker-info, thread-count, assigned-task-count,
-      (apply format-maybe-nil-pair #(format "%.2f" %),           (extract-attribute :total-completion)),
-      (apply format-maybe-nil-pair #(format "%3.2f" %),          (extract-attribute :mean-concurrency)),
-      (apply format-maybe-nil-pair #(format "%3.2f" %),          (extract-attribute :mean-efficiency)),
-      (apply format-maybe-nil-pair fmt/duration-format,          (extract-attribute :mean-duration)),
-      (apply format-maybe-nil-pair #(format-speed time-unit, %), (extract-attribute :mean-speed)),
-      connected,
-      (cond
-        last-active (fmt/datetime-format last-active)
-        disconnect-time [:i (fmt/datetime-format disconnect-time)]
-        :else "N/A"),
-      (form-to [:post (format "/admin/worker/%s" worker-id)]
-        [:table 
-         [:tr 
-          [:td "#Threads:"]
-          [:td (text-field {:maxlength 3 :size 2 :disabled (when-not connected true)} :thread-count thread-count)]
-          [:td (submit-button {:name "change" :disabled (when-not connected true)} "change")]]]))))
+    (if  connected?
+      (table-row 
+        worker-info, thread-count, assigned-task-count,
+        (apply format-maybe-nil-pair #(format "%.2f" %),           (extract-attribute :total-completion)),
+        (apply format-maybe-nil-pair #(format "%3.2f" %),          (extract-attribute :mean-concurrency)),
+        (apply format-maybe-nil-pair #(format "%3.2f" %),          (extract-attribute :mean-efficiency)),
+        (apply format-maybe-nil-pair fmt/duration-format,          (extract-attribute :mean-duration)),
+        (apply format-maybe-nil-pair #(format-speed time-unit, %), (extract-attribute :mean-speed)),
+        connected,
+        (form-to [:post (format "/admin/worker/%s" worker-id)]
+           [:table 
+            [:tr 
+             [:td "#Threads:"]
+             [:td (text-field {:maxlength 3 :size 2 :disabled (when-not connected true)} :thread-count thread-count)]
+             [:td (submit-button {:name "change" :disabled (when-not connected true)} "change")]]]),
+        (form-to [:post (format "/admin/worker/%s/shutdown" worker-id)]
+           [:table
+            [:tr
+             [:td (check-box "confirm" false) "confirm"]
+             [:td (submit-button {:name "shutdown"} "shutdown")]]]))
+      (table-row 
+        worker-info, thread-count,
+        (format-maybe-nil #(format "%.2f" %),           (:total-completion total-performance-data)),
+        (format-maybe-nil #(format "%3.2f" %),          (:mean-concurrency total-performance-data)),
+        (format-maybe-nil #(format "%3.2f" %),          (:mean-efficiency total-performance-data)),
+        (format-maybe-nil fmt/duration-format,          (:mean-duration total-performance-data)),
+        (format-maybe-nil #(format-speed time-unit, %), (:mean-speed total-performance-data)),
+        [:i (fmt/datetime-format disconnect-time)]))))
 
 (defn- render-worker-table
-  [rated-worker-coll, rating-period-map, rating-period, time-unit]
-  (let [period-str (format "<br>(%.1f min)" (/ (rating-period-map rating-period) 1000.0 60.0))]
-    [[:h3 (format "Worker Nodes (%d)" (count rated-worker-coll))]
-	   (into [:table {:border 1}
-	           (table-head "Worker" "#Threads" "#Assigned Tasks"
-               (str "Task Completion" period-str), (str "Concurrency" period-str), (str "Efficiency" period-str),
-	             (str "AVG[duration]" period-str), (str "AVG[Speed]", period-str, "<br>tasks/", time-unit), 
-              "Connected?" "Last Active" "Setup")]
-	     (->> rated-worker-coll (sort-by :worker-info) (map #(render-worker-row %, time-unit))))]))
+  [rated-worker-coll, rating-period-map, rating-period, time-unit, connected?]
+  (let [rated-worker-coll (filterv #(= (:connected %) connected?) rated-worker-coll),
+        period-str (format "<br>(%.1f min)" (/ (rating-period-map rating-period) 1000.0 60.0))]
+    [[:h3 (format "%s Worker Nodes (%d)" (if connected? "Connected" "Disconnected") (count rated-worker-coll))]
+     (into [:table {:border 1}
+            (if connected?
+              (table-head "Worker" "#Threads" "#Assigned Tasks"
+                (str "Task Completion" period-str), (str "Concurrency" period-str), (str "Efficiency" period-str),
+                (str "AVG[duration]" period-str), (str "AVG[Speed]", period-str, "<br>tasks/", time-unit),
+                "Connected?", "Setup", "Shutdown")
+              (table-head "Worker" "#Threads"
+                "Task Completion", "Concurrency", "Efficiency",
+                "AVG[duration]", (str "AVG[Speed]", "<br>tasks/", time-unit),
+                "Disconnected"))]
+	      (->> rated-worker-coll
+         (sort-by (if connected? :worker-info :disconnect-time))
+         (mapv #(render-worker-row %, time-unit, connected?))))]))
 
 
 (defn- render-client-table
   [client-data-coll]
   [[:h3 (format "Client Nodes (%d)" (count client-data-coll))]
-   (into [:table {:border 1} (table-head "Client" "#Jobs" "#Tasks" "#Finished Tasks" "Progress" "Connected?" "Last Active")]
+   (into [:table {:border 1} (table-head "Client" "#Jobs" "#Tasks" "#Finished Tasks" "Progress" "#Exceptions" "Connected?" "Disconnected")]
      (map
-       (fn [{:keys [job-count, task-count, finished-task-count, progress client-info, last-active, connected, disconnect-time]}]
+       (fn [{:keys [job-count, task-count, finished-task-count, progress client-info, last-active, exception-count, connected, disconnect-time]}]
          (table-row client-info, job-count, task-count, finished-task-count,
-                    (format "%5.2f%%" (* 100 progress)) connected, 
-                    (cond
-								      last-active (fmt/datetime-format last-active)
-								      disconnect-time [:i (fmt/datetime-format disconnect-time)]
-								      :else "N/A")))
+           (if progress (format "%5.2f%%" progress) "N/A"),
+           exception-count,
+           connected, 
+           (cond
+             ;last-active (fmt/datetime-format last-active)
+             disconnect-time [:i (fmt/datetime-format disconnect-time)]
+             :else "-")))
        (sort-by :client-info client-data-coll)))])
 
 
@@ -346,11 +412,37 @@
     (format-maybe-nil fmt, value1)))
 
 
+(defn- latest-job-comparison
+  [job1, job2]
+  (let [{{estimated-end-1 :estimated-end, finished-time-1 :last-update-timestamp} :total-performance-data,
+         finished?-1 :finished,
+         register-time-1 :register-time} job1,
+        {{estimated-end-2 :estimated-end, finished-time-2 :last-update-timestamp} :total-performance-data,
+         finished?-2 :finished,
+         register-time-2 :register-time} job2]
+    (if (or finished?-1 finished?-2)
+      ; one of the jobs is finished
+      (cond
+        ; both finished: latest finished comes first
+        (and finished?-1 finished?-2) (> finished-time-1 finished-time-2)
+        ; only job 1 finished => later in list than job 2 (which is still processed)
+        finished?-1 false
+        ; only job 2 finished => later in list than job 1 (which is still processed)
+        finished?-2 true)
+      (cond
+        ; both have estimations: latest estimation comes first
+        (and estimated-end-1 estimated-end-2) (> estimated-end-1 estimated-end-2)
+        estimated-end-1 false
+        estimated-end-2 true
+        ; both have no estimation data: compare register times (latest first)
+        :else (> register-time-1 register-time-2)))))
+
+
 (defn- render-job-information
   [job-data-map, rating-period-map, rating-period, time-unit]
   (let [job-count (reduce-kv #(+ %1 (count %3)) 0 job-data-map)
         period-str (format "<br>(%.1f min)" (/ (rating-period-map rating-period) 1000.0 60.0))]
-    [[:h3 (format "Jobs (%d)" job-count)]
+    [[:h2 (format "Jobs (%d)" job-count)]
      (into [:table {:border 1}
             (table-head "Job ID" "#Tasks" "#Finished Tasks" "Progress" "#Exceptions" "Finished" "Current Duration"
               (str "Concurrency" period-str),
@@ -359,14 +451,14 @@
               (str "AVG[Speed]", period-str, "<br>tasks/" time-unit),
               (str "CPU Time" period-str),
               (str "Estimated Duration" period-str)
-              (str "Estimated End" period-str))]
+              (str "(Estimated) End" period-str))]
        (apply concat
          (for [[{:keys [client-info job-count]} jobs] (sort-by (comp :client-info first) job-data-map)]
 	         (into
 	           [[:tr [:td {:colspan 15, :align :center, :style "color:navy"} [:b (format "%s (#jobs = %d)" client-info job-count)]]]]
 	           (for [{:keys [job-id, task-count, finished-task-count, finished, progress, exception-count,
                            selected-period-performance-data, total-performance-data]}
-                   (sort-by :job-id jobs)
+                   (sort latest-job-comparison jobs)
                    :let [in-progress? (not finished),
                          job-duration (:measure-period total-performance-data),
                          extract-attribute (fn [attribute-kw] (map attribute-kw [total-performance-data, selected-period-performance-data]))]]
@@ -393,8 +485,6 @@
 
 (defn average-task-duration
   [{:keys [total-duration, total-completion] :as performance-data}]
-  #_(when (and (real-number? total-duration) (real-number? total-task-completion))
-     (quot total-duration total-task-completion))
   (when (and total-duration total-completion (pos? total-completion))
     (/ total-duration total-completion)))
 
@@ -411,9 +501,11 @@
 
 (defn- render-server-summary
   [{:keys [total-performance-data, selected-period-performance-data,
-           total-job-count, total-task-count, total-finished-task-count, worker-count, client-count]},
+           total-job-count, total-task-count, total-finished-task-count, worker-count,
+           total-exception-count,
+           client-count, thread-count]},
    rating-period-map, rating-period, time-unit]
-  (let [period-str (format "<br>(%.1f min)" (/ (rating-period-map rating-period) 1000.0 60.0)),
+  (let [period-str (format "(%.1f min)" (/ (rating-period-map rating-period) 1000.0 60.0)),
         now (System/currentTimeMillis),
         remaining-task-count (when (and total-task-count total-finished-task-count)
                                (- total-task-count total-finished-task-count))
@@ -421,13 +513,16 @@
         estimated-duration-period (estimate-duration remaining-task-count, selected-period-performance-data),
         estimated-end (some-> estimated-duration (+ now)),
         estimated-end-period (some-> estimated-duration-period (+ now)),        
-        total-progress (when (and total-finished-task-count total-task-count)
+        total-progress (when (and total-task-count, total-finished-task-count)
                          (/ (* 100.0 total-finished-task-count) total-task-count))]
     [[:h2 "Server Summary"]
      [:table {:border 1}
       [:tr
-       [:td [:b "Worker Count:"]]
+       [:td [:b "Connected Worker Count:"]]
        [:td {:align :center} (format-maybe-nil #(format "%d" (long %)) worker-count)]]
+      [:tr
+       [:td [:b "Thread Count:"]]
+       [:td {:align :center} (format-maybe-nil #(format "%d" (long %)) thread-count)]]
       [:tr
        [:td [:b "Client Count:"]]
        [:td {:align :center} (format-maybe-nil #(format "%d" (long %)) client-count)]]
@@ -442,7 +537,10 @@
        [:td {:align :center} (format-maybe-nil #(format "%d" (long %)) total-finished-task-count)]]
       [:tr
        [:td [:b "Total Progress:"]]
-       [:td {:align :center} (format-maybe-nil #(format "%3.2f%%" %) total-progress)]]]
+       [:td {:align :center} (format-maybe-nil #(format "%3.2f%%" %) total-progress)]]
+      [:tr
+       [:td [:b "Total Exception Count:"]]
+       [:td {:align :center} (format-maybe-nil #(format "%d" %) total-exception-count)]]]
      [:p]
 	   [:table {:border 1}
       [:tr [:th] [:th "Total"] [:th period-str]]
@@ -510,7 +608,7 @@
 (defn- render-view-settings
   [rating-period-map, rating-period, time-unit]
   (let [rating-period-display (/ (double rating-period) 1000 60)]
-    [[:h3 "View Settings"]
+    [[:h2 "View Settings"]
      (form-to [:get "/admin"]
       [:table 
         [:tr 
@@ -525,10 +623,14 @@
 (defn- render-admin-panel
   []
   [[:h2 "Admin Server Control"]
+   [:h3 "Job Data"]
    (form-to [:post "/admin/clear-finished-jobs"]
      (submit-button {:name "clearfinishedjobs"} "Clear finished jobs"))
-   (form-to [:post "/admin/export-worker-task-durations"]
-     (submit-button {:name "exportworkertaskdurations"} "Export worker task durations"))])
+   [:h3 "Shutdown"]
+   (form-to [:post "/admin/shutdown-workers"]
+     [:table
+      [:tr [:td (check-box "confirm" false) "confirm"]]
+      [:tr [:td (submit-button {:name "shutdown"} "shutdown all workers")]]])])
 
 
 (defn get-rating-period
@@ -551,8 +653,8 @@
     (title server-node, nil))
   ([server-node, page-title]
     (if page-title
-      (format "%s - %s - Sputnik (%s)" page-title (node/node-info server-node) (v/sputnik-version))
-      (format "%s - Sputnik (%s)" (node/node-info server-node) (v/sputnik-version)))))
+      (format "%s - Sputnik (%s)" page-title (v/sputnik-version))
+      (format "Sputnik (%s)" (v/sputnik-version)))))
 
 
 (defn admin-main
@@ -564,8 +666,7 @@
        [:h1 "Admin"]
        [:p [:b (title server-node)]]
        [:p (link-to "/admin/exceptions" (submit-button "Exceptions")) (link-to "/admin/logs" (submit-button "Server log files")) (link-to "/logout" (submit-button "logout"))]
-       [:p (node/node-info server-node)]
-       [:h2 "Connected Nodes"]
+       
        (let [rating-period (get-rating-period rating-period, rating-period-map),
              time-unit (or ((set time-unit-options) time-unit) default-time-unit),
              rated-worker-coll (worker-data server-node, rating-period),           
@@ -573,18 +674,20 @@
              job-data-map (job-data server-node, client-data, rating-period),
              {:keys [total-avg-concurrency, total-avg-concurrency-period] :as summary-data} (server-summary-data rated-worker-coll, client-data)]
          (concat
-	          (render-worker-table rated-worker-coll, rating-period-map, rating-period, time-unit)
-	          (render-client-table client-data)
-            (render-job-information job-data-map, rating-period-map, rating-period, time-unit)
-            (render-server-summary summary-data, rating-period-map, rating-period, time-unit)
-            (render-view-settings rating-period-map, rating-period, time-unit)
-            (render-admin-panel)))])))
+           (render-server-summary summary-data, rating-period-map, rating-period, time-unit)
+           [[:h2 "Nodes"]]
+           (render-worker-table rated-worker-coll, rating-period-map, rating-period, time-unit, true)
+           (render-worker-table rated-worker-coll, rating-period-map, rating-period, time-unit, false)
+           (render-client-table client-data)
+           (render-job-information job-data-map, rating-period-map, rating-period, time-unit)
+           (render-view-settings rating-period-map, rating-period, time-unit)
+           (render-admin-panel)))])))
 
 
 (defn public-index
   [server-node]
   (html-timing-info
-    (format "Sputnik @ %s" (node/nodename server-node))
+    "Sputnik"
     [:body
      [:h1 "Sputnik!"]
      (link-to "admin" (submit-button "Admin"))
@@ -647,9 +750,8 @@
 
 
 (defn worker-thread-setup
-  [server-node, worker-id-str, thread-count-str]
-  (let [worker-id (try (UUID/fromString worker-id-str) (catch Throwable t nil)),
-        thread-count (try (Long/parseLong thread-count-str) (catch Throwable t nil))]
+  [server-node, worker-id, thread-count-str]
+  (let [thread-count (try (Long/parseLong thread-count-str) (catch Throwable t nil))]
     (when (and worker-id thread-count)
       (server/worker-thread-setup server-node, worker-id, thread-count))))
 
@@ -659,6 +761,13 @@
   (mgmt/remove-finished-job-data (server/manager server-node)))
 
 
-(defn export-worker-task-durations
-  [server-node]
-  (mgmt/export-worker-task-durations "worker-task-durations.map" (server/manager server-node)))
+(defn worker-shutdown
+  [server-node, worker-id, {{:keys [worker-id, confirm]} :params}]
+  (when (= confirm "true")
+    (server/worker-shutdown server-node, worker-id)))
+
+
+(defn shutdown-workers
+  [server-node, {{:keys [confirm]} :params}]
+  (when (= confirm "true")
+    (server/shutdown-workers server-node)))

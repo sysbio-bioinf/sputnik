@@ -36,18 +36,20 @@
 
 (def ^:private node-display-properties
   ^{:config-type :sputnik/node}
-  {:host-name    {:order 1, :path [:host :name],            :type :string, :additional-paths [[:options :nodename] [:sputnik/config-id]],
-                  :caption "Host name"},
-   :host-address {:order 2, :path [:host :address],         :type :string, :additional-paths [[:options :hostname]],
-                  :caption "Host address"},
-   :user         {:order 3, :path [:host :user :username],  :type :string,
-                  :caption "User account"},
-   :ssh-port     {:order 4, :path [:host :ssh-port],        :type :int,
-                  :caption "SSH port"},
-   :cpus         {:order 5, :path [:options :cpus],         :type :int,
-                  :caption "Number of available CPUs"},
-   :sputnik-jvm  {:order 6, :path [:sputnik-jvm],           :type :string,
-                  :caption "Custom Sputnik JVM"}})
+  {:host-name       {:order 1, :path [:host :name],            :type :string, :additional-paths [[:sputnik/config-id]],
+                     :caption "Host name"},
+   :host-address    {:order 2, :path [:host :address],         :type :string, :additional-paths [[:options :hostname]],
+                     :caption "Host address"},
+   :user            {:order 3, :path [:host :user :username],  :type :string,
+                     :caption "User account"},
+   :ssh-port        {:order 4, :path [:host :ssh-port],        :type :int,
+                     :caption "SSH port"},
+   :cpus            {:order 5, :path [:options :cpus],         :type :int,
+                     :caption "Number of available CPUs"},
+   :sputnik-jvm     {:order 6, :path [:sputnik-jvm],           :type :string,
+                     :caption "Custom Sputnik JVM"},
+   :sputnik-numactl {:order 7, :path [:sputnik-numactl],       :type :string,
+                     :caption "Custom Sputnik numactl"}})
 
 
 (defn create-node-table
@@ -57,12 +59,13 @@
       :id :node-table
       :model
       [:columns
-        [{:key :host-name,    :text "Name" }
-         {:key :host-address, :text "Address"}
-         {:key :user,         :text "User account"}
-         {:key :ssh-port,     :text "SSH port"}
-         {:key :cpus,         :text "#CPUs"}
-         {:key :sputnik-jvm,  :text "JVM"}]])))
+        [{:key :host-name,       :text "Name" }
+         {:key :host-address,    :text "Address"}
+         {:key :user,            :text "User account"}
+         {:key :ssh-port,        :text "SSH port"}
+         {:key :cpus,            :text "#CPUs"}
+         {:key :sputnik-jvm,     :text "JVM"}
+         {:key :sputnik-numactl, :text "numactl"}]])))
 
 
 
@@ -88,47 +91,48 @@
       :type :string,
       :caption "Server node",
       :choice (partial select-node-configs :sputnik/node)},
-   :admin-user
+   :sputnik-port
      {:order 3,
+      :path [:options :sputnik-port],
+      :type :int,
+      :caption "Port"},
+   :admin-user
+     {:order 4,
       :path [:options :admin-user],
       :type :string,
       :caption "Admin user"},
    :admin-password
-     {:order 4,
+     {:order 5,
       :path [:options :admin-password],
       :type :string,
       :caption "Admin password"},
    :min-ui-port
-     {:order 5,
+     {:order 6,
       :path [:options :min-ui-port],
       :type :int,
       :caption "Minimum Web UI HTTP port"},
    :max-ui-port
-     {:order 6,
+     {:order 7,
       :path [:options :max-ui-port],
       :type :int,
       :caption "Maximum Web UI HTTP port"},
-   :registry-port
-     {:order 7,
-      :path [:options :registry-port],
-      :type :int,
-      :caption "Registry port"},
-   :node-port
-     {:order 8,
-      :path [:options :node-port],
-      :type :int,
-      :caption "Node port"},
    :sputnik-jvm-opts
-     {:order 9,
+     {:order 8,
       :path [:sputnik-jvm-opts],
       :type :string,
       :caption "JVM options"},
    :log-level
-     {:order 10,
+     {:order 9,
       :path [:options :log-level],
       :type :keyword,
       :caption "Logging level",
       :choice ["info", "trace", "debug", "warn", "error", "fatal"]}
+   :scheduling-strategy
+     {:order 10,
+      :path [:options :scheduling-strategy],
+      :type :keyword,
+      :caption "Scheduling strategy"
+      :choice ["equal-load" "fastest-max-tasks"]}
    :scheduling-timeout
      {:order 11,
       :path [:options :scheduling-timeout],
@@ -169,17 +173,13 @@
       :id :server-table
       :model
       [:columns
-        [{:key :server-name,      :text "Name"}
-         {:key :server-node,      :text "Node"}
-         {:key :admin-user,       :text "Admin user"}
-         {:key :admin-password,   :text "Admin password"}
-         {:key :min-ui-port,      :text "Min. HTTP port"}
-         {:key :max-ui-port,      :text "Max. HTTP port"}
-         {:key :registry-port,    :text "Registry port"}
-         {:key :node-port,        :text "Node port"}
-         {:key :sputnik-jvm-opts, :text "JVM options"}
-         {:key :log-level,        :text "Log level"}
-         {:key :task-stealing,    :text "Task stealing"}]])))
+        [{:key :server-name,        :text "Name"}
+         {:key :server-node,        :text "Node"}
+         {:key :sputnik-port,       :text "Port"}
+         {:key :scheduling-strategy :text "Scheduling strategy"}
+         {:key :task-stealing,      :text "Task stealing"}
+         {:key :sputnik-jvm-opts,   :text "JVM options"}
+         {:key :log-level,          :text "Log level"}]])))
 
 
 
@@ -190,19 +190,17 @@
    :worker-node         {:order 2, :path [:sputnik/role-node],            :type :string,
                          :caption "Worker node",
                          :choice (partial select-node-configs :sputnik/node)},
-   :worker-threads      {:order 3, :path [:options :worker-threads], :type :int,
-                         :caption "Number of worker threads"}
-   :registry-port       {:order 4, :path [:options :registry-port],       :type :int,
-                         :caption "Registry port"},
-   :node-port           {:order 5, :path [:options :node-port],           :type :int,
-                         :caption "Node port"},
-   :send-result-timeout {:order 6, :path [:options :send-result-timeout], :type :int,
+   :numa-nodes          {:order 3, :path [:numa-nodes],                   :type :int,
+                         :caption "Number of NUMA nodes"},
+   :worker-threads      {:order 4, :path [:options :worker-threads],      :type :int,
+                         :caption "Worker threads (per NUMA node)"},
+   :send-result-timeout {:order 5, :path [:options :send-result-timeout], :type :int,
                           :caption "Send results timeout (ms)"},
-   :sputnik-jvm-opts {:order 7, :path [:sputnik-jvm-opts],                :type :string,
-                      :caption "JVM options"},
-   :log-level        {:order 8, :path [:options :log-level],              :type :keyword,
-                      :caption "Logging level",
-                      :choice ["info", "trace", "debug", "warn", "error", "fatal"]}})
+   :sputnik-jvm-opts    {:order 6, :path [:sputnik-jvm-opts],             :type :string,
+                         :caption "JVM options"},
+   :log-level           {:order 7, :path [:options :log-level],           :type :keyword,
+                         :caption "Logging level",
+                         :choice ["info", "trace", "debug", "warn", "error", "fatal"]}})
 
 
 (defn create-worker-table
@@ -214,9 +212,8 @@
       [:columns
         [{:key :worker-name,         :text "Name"}
          {:key :worker-node,         :text "Node"}
+         {:key :numa-nodes,          :text "#NUMA"}
          {:key :worker-threads,      :text "#Threads"}
-         {:key :registry-port,       :text "Registry port"}
-         {:key :node-port,           :text "Node port"}
          {:key :send-result-timeout, :text "Send result timeout"}
          {:key :sputnik-jvm-opts,    :text "JVM options"}
          {:key :log-level,           :text "Log level"}]])))
@@ -374,20 +371,20 @@
                             :user {:no-sudo true}}}
       :sputnik/server {:sputnik/config-id "server",
                        :options
-                       {:registry-port 12000,
-                        :node-port     12001,
+                       {:sputnik-port 23029,
                         :min-ui-port 8080,
                         :max-ui-port 18080,
                         :scheduling-timeout 100,
+                        :scheduling-strategy :equal-load,
                         :max-task-count-factor 2,
                         :worker-task-selection 'sputnik.satellite.server.scheduling/any-task-count-selection
                         :worker-ranking 'sputnik.satellite.server.scheduling/faster-worker-ranking
                         :task-stealing true
                         :task-stealing-factor 2}},
       :sputnik/worker {:sputnik/config-id "worker",
+                       :numa-nodes 1,
                        :options
-                       {:registry-port 11000,
-                        :node-port     11001}})))
+                       {:send-result-timeout 100}})))
 
 
 (defn deep-merge
@@ -502,8 +499,7 @@
               (-> data-map
                 (cond->
                   (not= selected-config-id new-config-id) (dissoc selected-config-id))
-                (assoc new-config-id new-config-data))
-              #_(assoc data-map selected-node new-config-data))))))))
+                (assoc new-config-id new-config-data)))))))))
 
 
 (defn add-table-entry
@@ -579,7 +575,9 @@
                                                  "[shrink 0]20px[100, grow, fill]"
                                                  "[shrink 0]5px[]"]
                                    :items [["Number of communication threads"] [(s/text :id :comm-thread-count)],
-                                           ["Use compression?"]  [(s/checkbox :id :compressed)]])
+                                           ["Use compression?"]  [(s/checkbox :id :compressed)]
+                                           ["Initial Buffer Size (Bytes)"] [(s/text :id :initial-buffer)]
+                                           ["Maximal Buffer Size (Bytes)"] [(s/text :id :max-buffer)]])
                                  :border 0)
                         :center (s/border-panel
                                   :north (s/checkbox :id :ssl-enabled, :text "enable SSL?", :selected? true)
@@ -603,7 +601,9 @@
    :keystore-password :string,
    :truststore-password :string,
    :comm-thread-count :int,
-   :compressed :bool})
+   :compressed :bool,
+   :initial-buffer :int,
+   :max-buffer :int})
 
 
 (defn refresh-truststore-entries
@@ -723,7 +723,7 @@
                      :center panel
                      :south (s/grid-panel :rows 1
                               :items [(s/button :text "Create"
-                                        :listen [:action (fn [e] (s/return-from-dialog e, (extract-communication-config panel)) #_(checked-return parent, e, panel))])
+                                        :listen [:action (fn [e] (s/return-from-dialog e, (extract-communication-config panel)))])
                                       (s/button :text "Cancel"
                                         :listen [:action (fn [e] (s/return-from-dialog e, nil))])])))
       s/pack!
@@ -984,18 +984,12 @@
       (future
         (try 
           (with-console-out frame
-            (launch/launch-nodes [server], communication, payload-list, (str payload-directory "-server"), :verbose true, :raise-on-error true #_raise-on-error))
+            (launch/launch-nodes [server], communication, payload-list, (str payload-directory "-server"), :verbose true, :raise-on-error true))
           (show-info-dialog frame, "Server start finished.")
           (catch Throwable t
             (show-error-dialog frame, "<html>The following error occured while trying to launch the specified server:<br><br>%s</html>" (.getMessage t)))
           (finally
             (s/config! launch-server-button :enabled? true)))))))
-
-
-(defn selected-client
-  [frame, data-map]
-  (let [client-id (-> frame (s/select [:#client-selection]) (s/config :text))]
-    (data-map (symbol client-id))))
 
 
 (defn no-passwords-intentionally?
@@ -1022,13 +1016,8 @@
 (defn- client-config-return
   [e, panel]
   (let [config-map (extract-communication-config panel),
-        ;client-node-id (some-> panel (s/select [:#client-selection]) (s/config :text) symbol),
-        ;server-role-id (some-> panel (s/select [:#server-selection]) (s/config :text) symbol)
         additional-values (get-data-from-panel panel,
-                            {[:client-node-id :#client-selection] symbol,
-                             [:server-role-id :#server-selection] symbol,
-                             :registry-port #(Integer/parseInt %),
-                             :node-port     #(Integer/parseInt %)}),
+                            {[:server-role-id :#server-selection] symbol}),
         config-map (merge config-map additional-values),
         filter-blank (fn [ks] (seq (filter #(str/blank? (config-map %)) ks))),
         empty-store-fields (filter-blank [:keystore, :truststore]),
@@ -1048,10 +1037,7 @@
                   :constraints ["wrap 2"
                                 "[shrink 0]20px[100, grow, fill]"
                                 "[shrink 0]5px[]"]
-                  :items [["Client node"]         [(s/combobox :id :client-selection, :model (mapv #(render %, type) nodes))]
-                          ["Registry port"]       [(s/text :id :registry-port, :text "13000")]
-                          ["Node port"]           [(s/text :id :node-port,     :text "13001")]
-                          ["Server node"]         [(s/combobox :id :server-selection, :model (mapv #(render %, type) server-roles))]
+                  :items [["Server node"]         [(s/combobox :id :server-selection, :model (mapv #(render %, type) server-roles))]
                           ["Keystore filename"]   [(s/border-panel
                                                      :center (s/text :id :keystore)
                                                      :east (s/button :id :choose-keystore, :text "..."))],
@@ -1066,7 +1052,7 @@
       
     (-> (s/custom-dialog :parent parent, :title "Client configuration" :on-close :dispose, :modal? true,
           :content (s/border-panel
-                     :preferred-size [450 :by 300]
+                     :preferred-size [450 :by 200]
                      :center panel
                      :south (s/grid-panel :rows 1
                               :items [(s/button :text "Save as ..."
@@ -1087,19 +1073,12 @@
                               (select-node-configs :sputnik/node data-map))]
       (when-let [file (choose-file frame, :save)]
         (let [client-communication (merge communication
-                                     (select-keys client-setup [:keystore, :keystore-password, :truststore, :truststore-password, :registry-port, :node-port])),
+                                     (select-keys client-setup [:keystore, :keystore-password, :truststore, :truststore-password])),
               {:keys [client-node-id, server-role-id]} client-setup,
               server (remove-sputnik-keys (server-node frame, data-map, server-role-id))
               client (remove-sputnik-keys (data-map client-node-id))
               client-config (->> client (cfg/use-server server) (cfg/use-communication client-communication) cfg/node-config)]
-          (launch/create-config-file client-config, file)))))
-  #_(when-let [file (choose-file frame, :save)]
-     (let [data-map @data-map-atom,
-           server (remove-sputnik-keys (selected-server frame, data-map)),
-           client (remove-sputnik-keys (selected-client frame, data-map)),
-           communication (remove-sputnik-keys (get-communication frame, data-map)),
-           client-config (->> client (cfg/use-server server) (cfg/use-communication communication) cfg/node-config)]
-       (launch/create-config-file client-config, file))))
+          (launch/create-config-file client-config, file))))))
 
 
 (defn selected-workers
@@ -1150,17 +1129,13 @@
       (future
         (try
           (with-console-out frame
-            (launch/launch-nodes worker-list, communication, payload-list, (str payload-directory "-worker"), :verbose true, :raise-on-error true #_raise-on-error))
+            (launch/launch-nodes worker-list, communication, payload-list, (str payload-directory "-worker"), :verbose true, :raise-on-error true))
           (show-info-dialog frame, "Worker start finished!")
           (catch Throwable t
             (show-error-dialog frame, "<html>The following error occured while trying to launch the specified workers:<br><br>%s</html>" (.getMessage t)))
           (finally
             (s/config! launch-workers-button :enabled? true)))))))
 
-
-
-(defn- show-config
-  [frame, data-map-atom])
 
 
 (defn- inspect-config
@@ -1234,7 +1209,6 @@
       (-> (s/select [:#create-client-config]) (s/listen :action (fn [_] (create-client-config frame, data-map-atom))))
       (-> (s/select [:#create-cluster-stores]) (s/listen :action (fn [_] (when (create-cluster-keystores frame, data-map-atom) (refresh)))))
       (-> (s/select [:#create-client-stores]) (s/listen :action (fn [_] (when (create-client-keystores frame, data-map-atom) (refresh)))))
-      (some-> (s/select [:#show-config]) (s/listen :action (fn [_] (show-config frame, data-map-atom))))
       (some-> (s/select [:#inspect-config]) (s/listen :action (fn [_] (inspect-config frame, data-map-atom)))))
     (refresh)
     frame))
@@ -1256,9 +1230,8 @@
                                                                    :items [(s/menu-item :id :save-config :text "Save")
                                                                            (s/menu-item :id :load-config :text "Load")])]
                                                           *debug*
-                                                  (conj (s/menu :text "Debug"
-                                                          :items [(s/menu-item :id :show-config :text "Show Config")
-                                                                  (s/menu-item :id :inspect-config :text "Inspect Config")]))))
+                                                          (conj (s/menu :text "Debug"
+                                                                  :items [(s/menu-item :id :inspect-config :text "Inspect Config")]))))
                                       :content (s/tabbed-panel :placement :top
                                                  :tabs [{:title "Remote nodes" :content (create-node-panel)}
                                                         {:title "Server configurations", :content (create-server-panel)},

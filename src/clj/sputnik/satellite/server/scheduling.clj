@@ -9,11 +9,12 @@
 (ns sputnik.satellite.server.scheduling
   (:require
     [clojure.stacktrace :refer [print-cause-trace]]
+    [clojure.string :as str]
     [clojure.tools.logging :as log]
-    [sputnik.satellite.node :as node]
+    [sputnik.satellite.messaging :as msg]
     [sputnik.satellite.server :as server]
     [sputnik.satellite.server.management :as mgmt]
-    [sputnik.satellite.server.performance-data :as pd]
+    [sputnik.tools.performance-data :as pd]
     [sputnik.satellite.protocol :as protocol]))
 
 
@@ -38,21 +39,21 @@
 
 
 (defn n-times-thread-count-tasks
-  "Calculates the new tasks to assign as difference of the worker's double thread count and the worker's
+  "Calculates the new tasks to assign as difference of the worker's thread count times n and the worker's
   already assigned tasks."
   [n, rated-worker-vec]
   (mapv
     (fn [{:keys [thread-count, assigned-task-count, worker-info] :as worker}]
       (if thread-count
         (let [max-task-count (long (* thread-count n)),
-              new-task-count (max 0, (- max-task-count assigned-task-count))]          
-          (log/debugf "Worker %s  should get %d new tasks (assigned tasks = %d, max tasks = %d)." worker-info, new-task-count, assigned-task-count, max-task-count)
+              new-task-count (max 0, (- max-task-count assigned-task-count))]
           (assoc worker
             :max-task-count max-task-count,
+            :capacity new-task-count,
             :new-task-count new-task-count ))
         ; if no thread-count is known
         (do
-          (log/debugf "Could not determine number of new tasks for worker %s because its thread count is unknown." worker-info)
+          (log/warnf "Could not determine number of new tasks for worker %s because its thread count is unknown." worker-info)
           (assoc worker :max-task-count 0, :new-task-count 0))))
     rated-worker-vec))
 
@@ -93,9 +94,9 @@
 (defn faster-worker?
   [{total-pd1 :total-performance-data, period-pd1 :maximal-period-performance-data, :as w1},
    {total-pd2 :total-performance-data, period-pd2 :maximal-period-performance-data, :as w2}]
-  
-  (let [w1-speed (when-let [pd1 (or period-pd1, total-pd1)] (pd/performance-attribute pd1, :mean-speed)),
-        w2-speed (when-let [pd2 (or period-pd2, total-pd2)] (pd/performance-attribute pd2, :mean-speed))]
+  ; TODO: experiment use only total performance data and see whether tha solves the weird cases
+  (let [w1-speed (when-let [pd1 total-pd1 #_(or period-pd1, total-pd1)] (pd/performance-attribute pd1, :mean-speed)),
+        w2-speed (when-let [pd2 total-pd2 #_(or period-pd2, total-pd2)] (pd/performance-attribute pd2, :mean-speed))]
     (cond 
       (and w1-speed w2-speed) (> w1-speed w2-speed),
       w1-speed true,
@@ -133,9 +134,11 @@
   ; determine minimum completion timestamp for the given workers
   (reduce
     (fn [result, {:keys [worker-id] :as rated-worker-data}]
-      (min
-        result,
-        (estimated-task-completion-at-worker mgr, rated-worker-data, (worker-id-timestamp-map worker-id))))
+      (if-let [task-assignment-timestamp (worker-id-timestamp-map worker-id)]
+        (min
+          result,
+          (estimated-task-completion-at-worker mgr, rated-worker-data, task-assignment-timestamp))
+        result))
     Long/MAX_VALUE
     rated-worker-vec))
 
@@ -182,16 +185,15 @@
 
 (defn steal-estimated-longest-lasting-tasks
   [factor, mgr, rated-worker-vec, {:keys [assigned-task-count, thread-count, worker-id, worker-info] :as rated-worker}, new-task-count]
-  (let [max-task-count (long (* factor thread-count)),        
-        steal-task-count (max 0, (- max-task-count assigned-task-count))]
-    (when (pos? steal-task-count)
-      (log/debugf "Task Scheduling: Trying to steal %d tasks for worker %s." steal-task-count worker-info)
-      (ranked-tasks-for-worker steal-task-count, estimated-completion-rating, mgr, rated-worker-vec, worker-id))))
+  (let [max-task-count (if (and factor thread-count)
+                         (long (* factor thread-count))
+                         0)]
+    (when (pos? max-task-count)
+      (let [steal-task-count (max 0, (- max-task-count assigned-task-count))]
+        (when (pos? steal-task-count)
+          (log/tracef "Task Scheduling: Trying to steal %d tasks for worker %s." steal-task-count worker-info)
+          (ranked-tasks-for-worker steal-task-count, estimated-completion-rating, mgr, rated-worker-vec, worker-id))))))
 
-
-(defn no-task-stealing
-  [factor, mgr, rated-worker-vec, rated-worker, new-task-count]
-  nil)
 
 
 (defn try-send+assign-tasks
@@ -200,20 +202,18 @@
   ([success-fn, server-node, worker-node, tasks]
 	  (try
 	    (let [now (System/currentTimeMillis)]
-        (log/debugf "Task scheduling: Sending %s tasks to worker %s." (count tasks) (node/node-info worker-node))
+        (log/debugf "Task scheduling: Sending %s tasks to worker %s." (count tasks) (msg/address-str worker-node))
 		    ; send message with tasks to the worker
-		    (node/send-message worker-node (protocol/task-distribution-message tasks))
+		    (msg/send-message worker-node (protocol/task-distribution-message tasks))
 		    ; successfull call the success function if given
 		    (when success-fn
 		      (success-fn))    
 		    ; assign tasks to worker
 		    (dosync
 		      (doseq [t tasks]
-		        (mgmt/assign-task (server/manager server-node), t, (node/node-id worker-node), now))))
+		        (mgmt/assign-task (server/manager server-node), t, (server/get-worker-id server-node, (msg/id worker-node)), now))))
 	    (catch Throwable t
-	      (log/errorf "Task Scheduling: Sending tasks to worker %s failed!" (node/node-info worker-node))	                  
-	      ; mark worker as unreachable (logout handler will be called)
-	      (node/remote-node-unreachable server-node (node/node-id worker-node))
+	      (log/errorf "Task Scheduling: Sending tasks to worker %s failed!" (msg/address-str worker-node))
 	      (throw t)))))
 
 
@@ -239,27 +239,28 @@
 
 (defn send-tasks
   [server-node, {:keys [worker-id, assigned-task-count] :as rated-worker}, new-task-count, task-queue-ref, task-stealing-fn]
-  (if-let [worker-node (node/get-remote-node server-node worker-id)]
+  (if-let [worker-node (server/get-worker-endpoint server-node worker-id)]
     (let [queue-size (count @task-queue-ref)
           n (min new-task-count queue-size)]	     
-      (log/debugf "Task Scheduling: Worker %s should get %d tasks (currently assigned: %d tasks). %d tasks can be take from the queue (total task count = %d).", (node/node-info worker-node), new-task-count, assigned-task-count, n, queue-size)
+      (log/tracef "Task Scheduling: Worker %s should get %d tasks (currently assigned: %d tasks). %d tasks can be take from the queue (total task count = %d).", 
+        (msg/address-str worker-node), new-task-count, assigned-task-count, n, queue-size)
       (if (pos? n)              
 	       (let [tasks (vec (take n @task-queue-ref))]
 	         (try-send+assign-tasks
              ; success function: removes tasks from queue
              #(dosync (alter task-queue-ref (fn [task-queue] (pop-from-queue n, task-queue))))
              server-node, worker-node, tasks))
-         (let [_ (log/debugf "Task Scheduling: No task in queue for worker %s. Trying to steal tasks now." (node/node-info worker-node)),
-               tasks (task-stealing-fn rated-worker, new-task-count),
-               n (count tasks)]
-           (log/debugf "Task Scheduling: Task Stealing selected %d tasks for worker %s." n (node/node-info worker-node))
-           (if (pos? n)
-             (try-send+assign-tasks server-node, worker-node, tasks)
-             (log/debugf "Task Scheduling: No task sent to worker %s.", (node/node-info worker-node))))))
+         (when task-stealing-fn
+           (let [_ (log/tracef "Task Scheduling: No task in queue for worker %s. Trying to steal tasks now." (msg/address-str worker-node)),
+                 tasks (task-stealing-fn rated-worker, new-task-count),
+                 n (count tasks)]
+             (log/tracef "Task Scheduling: Task Stealing selected %d tasks for worker %s." n (msg/address-str worker-node))
+             (when (pos? n)
+               (try-send+assign-tasks server-node, worker-node, tasks))))))
     (log/debugf "Task Scheduling: No worker with ID \"%s\" found!" worker-id)))
 
 
-(defn scheduling
+(defn fastest-max-task-scheduling
   [new-task-count-decision-fn, worker-task-selection-fn, worker-ranking-fn, task-stealing-fn, server-node]
   (try
     (let [scheduling-start-time (System/currentTimeMillis),
@@ -274,11 +275,132 @@
           task-queue-ref (mgmt/unassigned-task-queue mgr),
           task-stealing-fn (partial task-stealing-fn mgr, rated-worker-vec)
           preparation-stop-time (System/currentTimeMillis)
-          _ (log/debugf "Scheduling preparation took %s ms." (- preparation-stop-time scheduling-start-time))
+          _ (log/tracef "Scheduling preparation took %s ms." (- preparation-stop-time scheduling-start-time))
           _ (doseq [{:keys [new-task-count, worker-id] :as rated-worker} selected-workers :when (pos? new-task-count)]
               (send-tasks server-node, rated-worker, new-task-count, task-queue-ref, task-stealing-fn)),
           scheduling-stop-time (System/currentTimeMillis)]
-      (log/debugf "Complete scheduling took %s ms." (- scheduling-stop-time scheduling-start-time)))
+      (log/tracef "Complete scheduling took %s ms." (- scheduling-stop-time scheduling-start-time)))
     (catch Throwable t
       (log/errorf "Exception caught in the scheduling thread:\n%s" (with-out-str (print-cause-trace t)))))
   server-node)
+
+
+
+
+(defn assign-task-count-equally
+  [^long total-max-task-count, ^long total-capacity, ^long available-task-count, rated-worker-vec]
+  (if (>= available-task-count total-capacity)
+    (filterv #(pos? (:new-task-count %)) rated-worker-vec)
+    (let [n (count rated-worker-vec),
+          ; ratio of task that shall be assigned to each worker (approximately)
+          ratio (/ (double available-task-count) total-max-task-count)]
+      (loop [i 0, remaining-tasks available-task-count, result-vec (transient [])]
+        (if (< i n)
+          ; assign task count according to ratio and individual max-task-count
+          (let [{:keys [max-task-count, assigned-task-count] :as worker} (nth rated-worker-vec i),
+                new-task-count (if (< assigned-task-count max-task-count)
+                                 ; there is capacity left, 
+                                 (max 
+                                    ; if no task is assigned, assign at least one task
+                                    (if (zero? assigned-task-count) 1 0),
+                                    ; ... or as many tasks needed to have (approx.) the same assignment ratio on all nodes (round down)
+                                    (long (- (* ratio max-task-count) assigned-task-count)))
+                                 ; otherwise no task is assigned
+                                 0)]
+            (recur
+              (unchecked-inc i),
+              (unchecked-subtract remaining-tasks new-task-count),
+              (conj! result-vec (assoc worker :new-task-count new-task-count))))
+          ; if there are tasks left due to rounding (at most (count result-vec) many remaining tasks)
+          (if (and (pos? remaining-tasks) (pos? (count result-vec)))
+            ; then assign remaining tasks
+            (let [result-count (count result-vec)]
+              (loop [i 0, remaining-tasks remaining-tasks, result-vec (persistent! result-vec)]
+                (if (pos? remaining-tasks)
+                  (let [{:keys [capacity, new-task-count]} (nth result-vec i),
+                        i+1 (pd/inc-mod i, result-count)]
+                    (if (< new-task-count capacity)
+                      ; add one task
+                      (recur
+                        i+1,
+                        (unchecked-dec remaining-tasks),
+                        (update-in result-vec [i :new-task-count] inc))
+                      (recur i+1, remaining-tasks, result-vec)))
+                  result-vec)))            
+            ; else just return workers with assignment
+            (persistent! result-vec)))))))
+
+
+
+(defn send-tasks-to-workers
+  [server-node, task-queue-ref, rated-worker-vec]
+  (when (seq rated-worker-vec)
+    (log/tracef "Task Scheduling: %s", (str/join ", "
+                                         (mapv #(str (:worker-info %) " " (:new-task-count %)) rated-worker-vec)))
+    (doseq [{:keys [worker-id, worker-info, new-task-count] :as rated-worker} rated-worker-vec]
+      (if-let [worker-node (server/get-worker-endpoint server-node worker-id)]
+        (let [tasks (vec (take new-task-count @task-queue-ref))]
+          (try-send+assign-tasks
+            ; success function: removes tasks from queue
+            #(dosync (alter task-queue-ref (fn [task-queue] (pop-from-queue new-task-count, task-queue))))
+            server-node, worker-node, tasks))
+        (log/warnf "Task Scheduling: Worker \"%s\" with ID \"%s\" is not connected anymore!", worker-info, worker-id)))))
+
+
+(defn steal-tasks-for-workers
+  [task-stealing-fn, server-node, mgr, rated-worker-vec]
+  (doseq [{:keys [worker-id, worker-info, new-task-count] :as rated-worker} rated-worker-vec]    
+    (if-let [worker-node (server/get-worker-endpoint server-node worker-id)]
+      (let [tasks (task-stealing-fn mgr, rated-worker-vec, rated-worker, new-task-count)
+            n (count tasks)]
+        (log/tracef "Task Stealing: Stealing %s tasks for worker \"%s\"." n, worker-info)
+        (when (pos? n)
+          (try-send+assign-tasks server-node, worker-node, tasks)))
+      (log/warnf "Task Stealing: Worker \"%s\" with ID \"%s\" is not connected anymore!", worker-info, worker-id))))
+
+
+
+(defn equal-load-scheduling
+  [new-task-count-decision-fn, task-stealing-fn, server-node]
+  (try
+    (let [scheduling-start-time (System/currentTimeMillis),
+          mgr (server/manager server-node),
+          ; determine number of available task
+          task-queue-ref (mgmt/unassigned-task-queue mgr),
+          available-task-count (count @task-queue-ref),
+          rating-period-map (mgmt/rating-period-map mgr),
+          max-period (reduce max (keys rating-period-map)),
+          rated-worker-vec (new-task-count-decision-fn (mgmt/rated-workers mgr, max-period, true))]
+      (if (pos? available-task-count)
+        ; schedule remaining tasks
+        (let [; rated workers with max-task-count, sorted by mean speed
+              rated-worker-vec (faster-worker-ranking rated-worker-vec),
+              ; determine sum of maximum task limits 
+              total-max-task-count (reduce (fn [sum, worker] (+ sum (:max-task-count worker))) 0 rated-worker-vec),
+              ; determine remaining capacity
+              total-capacity (reduce (fn [sum, worker] (+ sum (:capacity worker))) 0 rated-worker-vec),
+              ; calculate task count assignment and filter only those workers with new tasks
+              rated-worker-vec (filterv
+                                 #(pos? (:new-task-count %))
+                                 (assign-task-count-equally total-max-task-count, total-capacity, available-task-count, rated-worker-vec)),
+              preparation-stop-time (System/currentTimeMillis)
+              _ (log/tracef "Scheduling preparation took %s ms." (- preparation-stop-time scheduling-start-time))
+              _ (send-tasks-to-workers server-node, task-queue-ref, rated-worker-vec)
+              scheduling-stop-time (System/currentTimeMillis)]
+          (log/tracef "Complete scheduling took %s ms." (- scheduling-stop-time scheduling-start-time)))
+        ; perform task stealing (if specified)
+        (when task-stealing-fn
+          (log/tracef "No tasks in queue - trying to steal tasks now.")
+          (let [; steal from workers with fewer thread utilization first
+                rated-workers-vec (sort-by 
+                                    #(/ (double (:assigned-task-count %)) (:max-task-count %))
+                                    (filterv
+                                      #(pos? (:new-task-count %))
+                                      (new-task-count-decision-fn (mgmt/rated-workers mgr, max-period, true))))]
+            (if (seq rated-workers-vec)
+              (let [_ (steal-tasks-for-workers task-stealing-fn, server-node, mgr, rated-worker-vec),
+                    stealing-stop-time (System/currentTimeMillis)]
+                (log/tracef "Complete stealing took %s ms." (- stealing-stop-time scheduling-start-time)))
+              (log/tracef "No worker capacity for stealing tasks."))))))
+    (catch Throwable t
+      (log/errorf "Exception caught in the scheduling thread:\n%s" (with-out-str (print-cause-trace t))))))

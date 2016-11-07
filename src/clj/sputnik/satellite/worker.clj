@@ -11,12 +11,15 @@
     [clojure.pprint :refer [pprint]]
     [clojure.stacktrace :refer [print-cause-trace]]
     [clojure.string :as str]
+    [clojure.java.io :as io]
+    [clojure.java.shell :as sh]
     [clojure.tools.logging :as log]
     [clojure.options :refer [defn+opts]]
-    [sputnik.satellite.node :as node]
+    [sputnik.satellite.messaging :as msg]
     [sputnik.satellite.protocol :as protocol]
     [sputnik.satellite.role-based-messages :as role]
     [sputnik.tools.resolve :as r]
+    [sputnik.tools.threads :as threads]
     [sputnik.tools.control-flow :as cf])
   (:import
     (java.util.concurrent ThreadPoolExecutor LinkedBlockingQueue TimeUnit)
@@ -30,80 +33,111 @@
 
 
 
-(defmulti handle-message "Handles the messages to the client according to their type." #'select-message-handler)
+(defmulti handle-message "Handles the messages to the worker according to their type." #'select-message-handler)
 
 
 (defmethod handle-message :default
   [this-node, remote-node, msg]
-  (log/errorf "Node %s: Unknown message type \"%s\"!\nMessage:\n%s" (node/node-info remote-node) (type msg) msg))
+  (log/errorf "Node %s: Unknown message type \"%s\"!\nMessage:\n%s" (msg/address-str remote-node) (type msg) msg))
 
 
 (defmethod handle-message :error
   [this-node, remote-node, msg]
   (let [{:keys [kind reason message]} msg] 
-    (log/errorf "Error from %s (type = %s reason = %s): %s" (node/node-info remote-node), kind, reason, message)))
+    (log/errorf "Error from %s (type = %s reason = %s): %s" (msg/address-str remote-node), kind, reason, message)))
 
 
-(defprotocol IWorkerData
-  (set-result-response-future [this, f]))
+(defprotocol IWorkerNode
+  (set-result-response-future [this, f])
+  (server-endpoint [this])
+  (shutdown [this, now?]))
 
-(deftype WorkerData [^ThreadPoolExecutor worker-thread-pool, worker-thread-count, task-result-queue, ^{:volatile-mutable true} result-response-future, finished-task-notification-set]
-  IWorkerData
+(deftype WorkerNode [message-client-atom, communication-thread-pool, role-map-atom, ^ThreadPoolExecutor worker-thread-pool, worker-thread-count, task-result-queue, ^{:volatile-mutable true} result-response-future, finished-task-notification-set, nickname, unique-id]
+  
+  IWorkerNode
+  
   (set-result-response-future [this, f]
-    (set! result-response-future f)))
+    (set! result-response-future f))
+  
+  (server-endpoint [this]
+    (deref message-client-atom))
+  
+  (shutdown [this, now?]
+    (threads/thread
+      (when-let [message-client (deref message-client-atom)]
+        (msg/shutdown message-client))
+      (if now?
+        (System/exit 0)
+        (do
+          (threads/shutdown-thread-pool worker-thread-pool, now?)
+          (threads/shutdown-thread-pool communication-thread-pool, now?)
+          (log/info "Worker shutdown complete."))))
+    nil)
+  
+  role/IRoleStorage
+  
+  (role! [this, remote-node, role]
+    (role/set-role* role-map-atom, remote-node, role)
+    this)
+  
+  (role [this, remote-node]
+    (role/get-role* role-map-atom, remote-node))
+  
+  threads/IExecutor
+ 
+  (execute [this, action]
+    (threads/submit-action communication-thread-pool, action)))
 
-
-(defn+opts create-worker-data
-  [ | {worker-thread-count nil}]
-  (let [thread-count (or worker-thread-count (.availableProcessors (Runtime/getRuntime)))]
-    (log/debugf "Option: worker-thread-count = %s - Starting worker with %s threads." worker-thread-count thread-count)
-    (WorkerData. 
-      (node/create-thread-pool :thread-count thread-count), 
-      (atom thread-count),
-      (LinkedBlockingQueue.),
-      nil,
-      (atom #{}))))
 
 
 (defn get-worker-thread-count
-  [worker-node]
-  (-> worker-node ^WorkerData node/user-data .worker_thread_count deref))
+  [^WorkerNode worker-node]
+  (-> worker-node .worker-thread-count deref))
 
 
 (defn task-already-finished?
-  [worker-node, task]
-  (let [task-key (protocol/create-task-key task)
-        finished-task-set (-> worker-node ^WorkerData node/user-data .finished_task_notification_set deref)]
-    (finished-task-set task-key)))
+  [^WorkerNode worker-node, task]
+  (when worker-node
+    (let [task-key (protocol/create-task-key task)
+          finished-task-set (-> worker-node .finished-task-notification-set deref)]
+      (finished-task-set task-key))))
+
+
+(defn nickname
+  [^WorkerNode worker-node]
+  (.nickname worker-node))
+
+(defn prev-unique-id
+  [^WorkerNode worker-node]
+  (.unique-id worker-node))
 
 
 (defn mark-task-finished!
-  [worker-node, task]
+  [^WorkerNode worker-node, task]
   (let [task-key (protocol/create-task-key task)
-        finished-task-set-atom (-> worker-node ^WorkerData node/user-data .finished_task_notification_set)]
+        finished-task-set-atom (.finished-task-notification-set worker-node)]
     (swap! finished-task-set-atom disj task-key)
     nil))
 
 
 (defn add-finished-tasks
-  [worker-node, finished-task-keys]
-  (let [finished-task-set-atom (-> worker-node ^WorkerData node/user-data .finished_task_notification_set)]
+  [^WorkerNode worker-node, finished-task-keys]
+  (let [finished-task-set-atom (.finished-task-notification-set worker-node)]
     (swap! finished-task-set-atom into finished-task-keys)
     nil))
 
 
 (defn set-worker-thread-count
-  [worker-node, thread-count]
-  (let [worker-data ^WorkerData (node/user-data worker-node)]
-    (doto ^ThreadPoolExecutor (.worker_thread_pool worker-data)
-      (.setCorePoolSize thread-count)
-      (.setMaximumPoolSize thread-count))
-    (reset! (.worker_thread_count worker-data) thread-count)))
+  [^WorkerNode worker-node, thread-count]
+  (doto ^ThreadPoolExecutor (.worker-thread-pool worker-node)
+    (.setCorePoolSize thread-count)
+    (.setMaximumPoolSize thread-count))
+    (reset! (.worker-thread-count worker-node) thread-count))
 
 
 (defn ^LinkedBlockingQueue get-task-result-queue
-  [worker-node]
-  (-> worker-node ^WorkerData node/user-data .task_result_queue))
+  [^WorkerNode worker-node]
+  (.task-result-queue worker-node))
 
 
 (defn enqueue-finished-task
@@ -128,8 +162,8 @@
 
 
 (defn submit-work*
-  [worker-node, work-fn]
-  (let [thread-pool (-> worker-node ^WorkerData node/user-data .worker_thread_pool)]
+  [^WorkerNode worker-node, work-fn]
+  (let [thread-pool (.worker-thread-pool worker-node)]
     (.submit ^ThreadPoolExecutor thread-pool ^Callable work-fn))
   nil) 
 
@@ -138,13 +172,13 @@
  `(submit-work* ~worker-node (^{:once true} fn* [] ~@work-body)))
 
 
-(defn connect-as-worker
-  "Connects the worker node to the server and requests the :worker role."
-  [worker-node, server-hostname, server-nodename, server-port]
-  (let [server-node (node/connect-to worker-node, server-hostname, server-nodename, server-port)]
-    ; request :worker role (when granted the worker-thread-info will be sent)
-    (node/send-message server-node (role/role-request-message :worker))
-    nil))
+#_(defn connect-as-worker
+   "Connects the worker node to the server and requests the :worker role."
+   [worker-node, server-hostname, server-nodename, server-port]
+   (let [server-node (node/connect-to worker-node, server-hostname, server-nodename, server-port)]
+     ; request :worker role (when granted the worker-thread-info will be sent)
+     (node/send-message server-node (role/role-request-message :worker))
+     nil))
 
 
 (defn prepare-task-results
@@ -164,19 +198,16 @@
   (loop []
     (try
       (let [task-results (pop-task-results worker-node, send-result-timeout, max-results-to-send),
-            ; group by server node (will support multiserver layouts)
-            ; actually groups by object identity.
-            remote-groups (group-by :server-node task-results)]
-        (doseq [[server-node task-results] remote-groups]
-          (log/debugf "Result sending: Found %s task results for server %s.\nTask ids: %s"
-            (count task-results), (node/node-info server-node), (str/join ", " (map (comp :task-id :task-data) task-results)))
+            server-endpoint (server-endpoint worker-node)]
+        (log/debugf "Result sending: Found %s task results for server %s.\nTask ids: %s"
+          (count task-results), (msg/address-str server-endpoint), (str/join ", " (map (comp :task-id :task-data) task-results)))
           (try
-            (cf/cond-wrap send-results-parallel, [node/safe-execute worker-node], 
-              (node/send-message server-node (protocol/tasks-completed-message (prepare-task-results task-results))))
+            (cf/cond-wrap send-results-parallel, [threads/safe-execute worker-node], 
+              (msg/send-message server-endpoint, (protocol/tasks-completed-message (prepare-task-results task-results))))
             (catch Throwable t
-	            (log/errorf "Sending task results to server %s failed!" (node/node-info server-node))
+	            (log/errorf "Sending task results to server %s failed!" (msg/address-str server-endpoint))
 	            ; TODO: recover somehow? store task-results on disk?
-	            (throw t)))))
+	            (throw t))))
       (catch Throwable t
         (log/errorf "Exception caught in the result sending thread:\n%s" (with-out-str (print-cause-trace t)))))
     ; continue with next worker
@@ -184,29 +215,109 @@
 
 
 (defn+opts start-result-response-thread
-  [worker-node | {send-result-timeout 1000, max-results-to-send nil, send-results-parallel true}]
-  (let [f (future (result-sending worker-node, send-result-timeout, max-results-to-send, send-results-parallel))] 
+  [worker-node | {send-result-timeout 100, max-results-to-send nil, send-results-parallel true}]
+  (let [f (future (result-sending worker-node, (or send-result-timeout 100), max-results-to-send, send-results-parallel))] 
     (doto worker-node
-      (-> node/user-data (set-result-response-future f)))))
+      (set-result-response-future f))))
+
+
+(defn hostname
+  "Try to get the hostname."
+  []
+  (or
+    (System/getenv "HOSTNAME")
+    (try
+      (some->> (sh/sh "hostname") :out (re-find #"(.*)[\n]?") second)
+      (catch Throwable t
+        nil))
+    (.getHostName (java.net.InetAddress/getLocalHost))))
+
+
+(defn node-name
+  [nickname, numa-id]
+  (cond-> (or nickname (hostname))
+    numa-id (str "-NUMA-" numa-id)))
+
+
+(defonce ^:private ^:const worker-id-filename-fmt "%s-worker.id")
+
+(defn save-worker-unique-id
+  [init-nickname, unique-id]
+  (spit (format worker-id-filename-fmt init-nickname) unique-id))
+
+(defn load-worker-unique-id
+  [init-nickname]
+  (let [filename (format worker-id-filename-fmt init-nickname)]
+    (when (.exists (io/file filename))
+      (slurp filename))))
 
 
 (defn+opts start-worker
-  [hostname, nodename, port, server-hostname, server-nodename, server-port | :as options]
-  (log/debugf "Worker %s@%s:%s started with options: %s", nodename, hostname, port, options)
-  (log/debugf "Remote server is %s@%s:%s", server-nodename, server-hostname, server-port)
-  (println (format "Worker %s@%s:%s starts. Corresponding server is %s@%s:%s.", nodename, hostname, port, server-nodename, server-hostname, server-port))
-  (let [worker-node (node/start-node hostname, nodename, port, (partial role/handle-message-checked handle-message)
-                      :user-data (create-worker-data options), options)]
-    (doto worker-node
-      (connect-as-worker server-hostname, server-nodename, server-port)
-      (start-result-response-thread options))))
+  [server-hostname, server-port | {worker-thread-count nil, nickname nil, numa-id nil} :as options]
+  (log/debugf "Worker started with options: %s", options)
+  (log/debugf "Remote server is %s:%s", server-hostname, server-port)
+  (println (format "Worker starts. Corresponding server is %s:%s.", server-hostname, server-port))
+  (let [thread-count (or worker-thread-count (.availableProcessors (Runtime/getRuntime))),
+        message-client-atom (atom nil),
+        nickname (node-name nickname, numa-id)
+        worker-node (WorkerNode. 
+                      ; message client
+                      message-client-atom                      
+                      ; communication-thread-pool
+                      (threads/create-thread-pool options)
+                      ; role-map-atom
+                      (atom {})
+                      ; worker-thread-pool
+                      (threads/create-thread-pool :thread-count thread-count), 
+                      (atom thread-count),
+                      (LinkedBlockingQueue.),
+                      nil,
+                      (atom #{}),
+                      nickname,
+                      (load-worker-unique-id nickname)),
+        message-client (msg/create-client server-hostname, server-port,
+                         (fn handle-messages-parallel [endpoint, message]
+                           (threads/safe-execute worker-node, (role/handle-message-checked handle-message, worker-node, endpoint, message))),
+                         ; try to reconnect worker on disconnect
+                         :disconnect-handler (fn reconnect-worker [endpoint]
+                                               (threads/safe-execute worker-node
+                                                 (try
+                                                   (log/warnf "Connection lost to server %s. Trying to reconnect." (msg/address-str endpoint))
+                                                   ; try to reconnect
+                                                   (msg/connect endpoint)
+                                                   ; request :worker role (when granted the worker-thread-info will be sent)
+                                                   (msg/send-message (server-endpoint worker-node), (role/role-request-message :worker))
+                                                   (catch Throwable t
+                                                     (log/errorf "Reconnecting worker to server %s failed due to:\n%s"
+                                                       (msg/address-str endpoint), (with-out-str (print-cause-trace t))))))),
+                         options)]
+    (log/debugf "Option: worker-thread-count = %s - Starting worker with %s threads." worker-thread-count thread-count)
+    (reset! message-client-atom message-client)
+    (when (msg/connect message-client)
+      (try
+        ; request :worker role (when granted the worker-thread-info will be sent)
+        (msg/send-message (server-endpoint worker-node), (role/role-request-message :worker))
+        (start-result-response-thread worker-node, options)
+        worker-node
+        (catch Throwable t
+          (log/errorf "Error during worker setup:\n%s" (with-out-str (print-cause-trace t)))
+          nil)))))
 
 
 (defmethod handle-message :role-granted
   [this-node, remote-node, {:keys [role]}]
-  (log/debugf "Server %s granted role %s." (node/node-info remote-node) role)
+  (log/debugf "Server %s granted role %s." (msg/address-str remote-node) role)
+  ; request worker-id for reconnection (on error)
+  (msg/send-message remote-node (protocol/worker-id-request-message (nickname this-node), (prev-unique-id this-node)))
   ; :worker role was granted, now send worker-thread-info
-  (node/send-message remote-node (protocol/worker-thread-info-message (get-worker-thread-count this-node))))
+  (msg/send-message remote-node (protocol/worker-thread-info-message (get-worker-thread-count this-node))))
+
+
+
+(defmethod handle-message :worker-id-response
+  [worker-node, remote-node, {:keys [unique-id, actual-nickname]}]
+  (log/debugf "Server assigned unique id %s and uses the nickname %s for this worker." unique-id, actual-nickname)
+  (save-worker-unique-id (nickname worker-node) unique-id))
 
 
 (defmacro wrap-error-log
@@ -247,7 +358,8 @@
   (try 
     (log/tracef "Task finished with:\n%s" (with-out-str (pprint execution-data)))
     (mark-task-finished! this-node, execution-data)
-    (enqueue-finished-task this-node {:server-node remote-node, :finished-task-map finished-task-map})
+    ; enqueue finished task - remove input data since only the ids and the result data are needed
+    (enqueue-finished-task this-node {:server-node remote-node, :finished-task-map (update-in finished-task-map [:task-data] dissoc :data)})
     (catch Throwable t
       (log/errorf "Exception when enqueueing task \"%s\" of job \"%s\" of client \"%s\".\n%s"
         (:task-id task-data), (:job-id task-data), (:client-id task-data), (with-out-str (print-cause-trace t)))))
@@ -264,14 +376,15 @@
       (try
         (apply f data)
         (catch Throwable t
-          (Exception. (format "Task execution failed for task %s with data:\n%s!" 
-                        f 
-                        (str/join "\n"
-                          (map-indexed
-                            (fn [i, param]
-                              (format "Param %d:\n%s" (inc i) (with-out-str (pprint param))))
-                            data))), 
-                      t))))))
+          (binding [*print-length* 50, *print-level* 3]
+            (Exception. (format "Task execution failed for task %s with data:\n%s!"
+                          function
+                          (str/join "\n"
+                            (map-indexed
+                              (fn [i, param]
+                                (format "Param %d:\n%s" (inc i) (with-out-str (pprint param))))
+                              data))),
+              t)))))))
 
 (defn execution
   [this-node, execute-fn, finished-check?, task-description, {:keys [task-id] :as task}]
@@ -337,13 +450,18 @@
 (let [execution execution,
       execute-task execute-task,
       execute-batch execute-batch]
+  
+  (defn start-execution
+    [this-node, task]
+    (if (protocol/task-batch? task)
+      (execution this-node, execute-batch, true, "Batch", task)
+      (execution this-node, execute-task, true, "Task", task)))
+  
   (defn process-task
     [this-node, remote-node, {:keys [task-id] :as task}]
     (try     
       (log/debugf "Processing task %s of job %s from client %s starts." task-id (:job-id task) (:client-id task))
-      (let [finished-task-map (if (protocol/task-batch? task)
-                                (execution this-node, execute-batch, true, "Batch", task)
-                                (execution this-node, execute-task, true, "Task", task))]
+      (let [finished-task-map (start-execution this-node, task)]
         ; send result back to remote-node
         (task-finished this-node, remote-node, finished-task-map))
       (catch Throwable t
@@ -354,20 +472,27 @@
 
 (defmethod handle-message :task-distribution
   [this-node, remote-node, {:keys [tasks]}]
-  (log/debugf "Received %s tasks from server %s" (count tasks) (node/node-info remote-node))
-  (log/tracef "Received %s tasks from server %s:\n%s" (count tasks) (node/node-info remote-node) (with-out-str (pprint tasks)))
+  (log/debugf "Received %s tasks from server %s." (count tasks) (msg/address-str remote-node))
+  (log/tracef "Received %s tasks from server %s:\n%s" (count tasks) (msg/address-str remote-node) (with-out-str (pprint tasks)))
   (doseq [t tasks]    
     (submit-work this-node (process-task this-node, remote-node, t))))
 
 
 (defmethod handle-message :worker-thread-setup
   [this-node, remote-node, {:keys [thread-count]}]
+  (log/infof "Server requests the usage of %s computation threads." thread-count)
   (set-worker-thread-count this-node, thread-count)
-  (node/send-message remote-node (protocol/worker-thread-info-message (get-worker-thread-count this-node))))
+  (msg/send-message remote-node (protocol/worker-thread-info-message (get-worker-thread-count this-node))))
 
 
 (defmethod handle-message :finished-task-notfication
   [this-node, remote-node, {:keys [finished-task-keys]}]
   (log/debugf "Received notification about %d tasks that are already finished from server %s. Finished tasks: %s"
-    (count finished-task-keys) (node/node-info remote-node) (str/join ", " finished-task-keys))
+    (count finished-task-keys) (msg/address-str remote-node) (str/join ", " finished-task-keys))
   (add-finished-tasks this-node, finished-task-keys))
+
+
+(defmethod handle-message :worker-shutdown
+  [worker-node, remote-node, {:keys [now?]}]
+  (log/infof "Server requests this worker to shut down (now? = %s)." (boolean now?))
+  (shutdown worker-node, now?))

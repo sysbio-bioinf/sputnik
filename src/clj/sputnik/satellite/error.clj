@@ -8,7 +8,7 @@
 
 (ns sputnik.satellite.error
   (:require
-    [sputnik.satellite.node :as node]
+    [sputnik.satellite.messaging :as msg]
     [sputnik.satellite.protocol :as protocol]
     [clojure.tools.logging :as log]))
 
@@ -18,8 +18,6 @@
 (defn send-error
   "Sends a message containing error information to the given `remote-node`."
   [this-node, remote-node, kind, reason, message]
-  (log/error (format "Send error to %s (type = %s reason = %s): %s" (node/node-info remote-node), type, reason, message))
+  (log/error (format "Send error to %s (type = %s reason = %s): %s" (msg/address-str remote-node), type, reason, message))
   (let [error-msg (error-message kind, reason, message)]
-    (println "\nsend-error\nerror message =" error-msg)
-    (println "meta =" (meta error-msg))
-    (node/send-message remote-node error-msg)))
+    (msg/send-message remote-node error-msg)))

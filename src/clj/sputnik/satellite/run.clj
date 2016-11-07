@@ -6,10 +6,11 @@
 ; the terms of this license.
 ; You must not remove this notice, or any other, from this software.
 
-(ns sputnik.version)
+(ns sputnik.satellite.run
+  (:gen-class))
 
 
-(def ^:private version "0.5.1")
-
-
-(defn sputnik-version [] version)
+(defn -main
+  [& args]
+  (require 'sputnik.satellite.main)
+  (apply (resolve 'sputnik.satellite.main/-main) args))

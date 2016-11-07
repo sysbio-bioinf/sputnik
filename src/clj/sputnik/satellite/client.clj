@@ -17,10 +17,11 @@
     [clojure.stacktrace :refer [print-cause-trace]]
     [clojure.tools.logging :as log]
     [clojure.options :refer [defn+opts, ->option-map]]
-    [sputnik.satellite.node :as node]
+    [sputnik.satellite.messaging :as msg]
     [sputnik.satellite.protocol :as protocol]
     [sputnik.satellite.role-based-messages :as role]
-    [sputnik.satellite.progress :as progress]
+    [sputnik.tools.threads :as threads]
+    [sputnik.tools.progress :as progress]
     [sputnik.config.api :as cfg]
     [sputnik.tools.file-system :as fs]
     [sputnik.tools.error :as e]))
@@ -38,105 +39,207 @@
 
 (defmethod handle-message :default
   [this-node, remote-node, msg]
-  (log/errorf "Node %s: Unknown message type \"%s\"!\nMessage:\n%s" (node/node-info remote-node) (type msg) msg))
+  (log/errorf "Node %s: Unknown message type \"%s\"!\nMessage:\n%s" (msg/address-str remote-node) (type msg) msg))
 
 
 (defmethod handle-message :error
   [this-node, remote-node, msg]
   (let [{:keys [kind reason message]} msg] 
-    (log/errorf "Error from %s (type = %s reason = %s): %s" (node/node-info remote-node), kind, reason, message)))
+    (log/errorf "Error from %s (type = %s reason = %s): %s" (msg/address-str remote-node), kind, reason, message)))
 
+
+(defprotocol IConnectable
+  (connect [this])
+  (disconnect [this]))
+
+
+(defprotocol IClientNode
+  (server-endpoint [this])
+  (shutdown [this, now?]))
 
 
 ; job-registry:
 ;  job: {:job-id int, :job-data data, :result-callback function}
-(deftype ClientData [job-registry, connected-promise-atom, additional-data])
+(deftype ClientNode [message-client-atom, thread-pool, role-map-atom, job-registry, connected-promise-atom, additional-data]
+  
+  IClientNode
+  
+  (server-endpoint [this]
+    (deref message-client-atom))
+  
+  (shutdown [this, now?]    
+    (threads/shutdown-thread-pool thread-pool, now?)
+    (disconnect this))
+  
+  IConnectable
+  
+  (connect [this]
+    (when-let [message-client (deref message-client-atom)]
+      (if (msg/connect message-client)
+        this
+        (throw (Exception. (format "Failed to connecto to %s." (msg/address-str message-client)))))))
+  
+  (disconnect [this]
+    (when-let [message-client (deref message-client-atom)]
+      (msg/disconnect message-client)))
+  
+  role/IRoleStorage
+  
+  (role! [this, remote-node, role]
+    (role/set-role* role-map-atom, remote-node, role)
+    this)
+  
+  (role [this, remote-node]
+    (role/get-role* role-map-atom, remote-node))
+  
+  threads/IExecutor
+ 
+  (execute [this, action]
+    (threads/submit-action thread-pool, action)))
 
 
-(defn create-client-data
-  []
-  (ClientData. (atom {}), (atom nil), (atom nil)))
+(defn job-with-task-map
+  [{:keys [tasks] :as job-data}]
+  (-> job-data
+    (dissoc :tasks)
+    (assoc
+      :task-map
+      (persistent!
+        (reduce
+          (fn [task-map, task]
+            (assoc! task-map (:task-id task) task))
+          (transient {})
+          tasks)))))
 
 
 (defn register-job
-  [client-node, job-data, result-callback-fn]
+  [^ClientNode client-node, job-data, result-callback-fn]
   (if-let [job-id (:job-id job-data)]
-    (let [job-reg (-> client-node ^ClientData node/user-data .job_registry)] 
+    (let [job-reg (.job-registry client-node)] 
       (if (contains? @job-reg job-id)
         (throw (IllegalArgumentException. (format "The :job-id %s is already used!" job-id)))
         (do
-          (swap! job-reg assoc job-id {:job-data job-data, :result-callback result-callback-fn})
+          (swap! job-reg assoc job-id {:job-data (job-with-task-map job-data), :result-callback result-callback-fn})
           nil)))
     (throw (IllegalArgumentException. "The given job has no :job-id!"))))
 
 
+(defn get-job-map
+  [^ClientNode client-node]
+  (let [job-reg (.job-registry client-node)]
+    (deref job-reg)))
+
+
+(defn get-job
+  [^ClientNode client-node, job-id]
+  (let [job-reg (.job-registry client-node)]
+    (get (deref job-reg) job-id)))
+
+
 (defn remove-job
-  [client-node, job-data]
-  (let [job-reg (-> client-node ^ClientData node/user-data .job_registry)]
-    (swap! job-reg dissoc (:job-id job-data))))
+  [^ClientNode client-node, job-id]
+  (let [job-reg (.job-registry client-node)]
+    (swap! job-reg dissoc job-id)))
 
 
 (defn get-job-result-callback
-  [client-node, job-id]
-  (some-> client-node ^ClientData node/user-data .job_registry deref (get-in [job-id :result-callback])))
+  [^ClientNode client-node, job-id]
+  (some-> client-node .job-registry deref (get-in [job-id :result-callback])))
 
 
 (defn setup-connected-sync
-  [client-node]
+  [^ClientNode client-node]
   (let [connected-promise (promise)] 
-    (-> client-node ^ClientData node/user-data .connected_promise_atom (reset! connected-promise))
+    (-> client-node .connected-promise-atom (reset! connected-promise))
     connected-promise))
 
 (defn notify-connected
-  [client-node]
-  (-> client-node ^ClientData node/user-data .connected_promise_atom deref (deliver true)))
+  [^ClientNode client-node]
+  (-> client-node .connected-promise-atom deref (deliver true)))
 
 
 ; result-callback-fn: [client, finished-tasks] -> void
 (defprotocol ISputnikClient
-  (connect [this, hostname, nodename, port])
   (submit-job [this, job-data, result-callback-fn])
-  (job-finished [this, job-data]))
+  (job-finished [this, job-id]))
 
 
-(deftype SputnikClient [client-node, ^{:volatile-mutable true} server-node]
-  ISputnikClient
-  (connect [this, hostname, nodename, port]
-    (log/debugf "Client tries to connect to server %s@%s:%s ..." nodename hostname port)
-    (let [remote-node (node/connect-to client-node, hostname, nodename, port)]
-      (log/debugf "Client connected to server %s@%s:%s" nodename hostname port)
-      (set! server-node remote-node)        
+(deftype SputnikClient [client-node]
+  
+  IConnectable
+  
+  (connect [this]
+    (let [server-endpoint (server-endpoint client-node)]
+      (log/debugf "SputnikClient tries to connect to server %s ..." (msg/address-str server-endpoint))
+      (connect client-node)
+      (log/debugf "SputnikClient connected to server %s" (msg/address-str server-endpoint))
       (let [sync-promise (setup-connected-sync client-node)]
-        (node/send-message remote-node (role/role-request-message :client))  
-        @sync-promise)))
+        (msg/send-message server-endpoint (role/role-request-message :client))  
+        @sync-promise))
+    this)
+  
+  (disconnect [this]
+    (disconnect client-node)
+    this)
+  
+  ISputnikClient
+  
   (submit-job [this, job-data, result-callback-fn]
     (register-job client-node, job-data, (partial result-callback-fn this))
-    (log/tracef "Sending job data to server %s:\n%s" (node/node-info server-node) (with-out-str (pprint job-data)))
-    (node/send-message server-node (protocol/job-submission-message job-data))
-    nil)
-  (job-finished [this, job-data]
-    (remove-job client-node, job-data)
-    nil)
+    (log/tracef "Sending job data to server %s:\n%s" (server-endpoint client-node) (with-out-str (pprint job-data)))
+    (msg/send-message (server-endpoint client-node) (protocol/job-submission-message job-data))
+    this)
+  
+  (job-finished [this, job-id]
+    (remove-job client-node, job-id)
+    this)
+  
   Closeable
+  
   (close [this]
-    (node/shutdown client-node, false)
-    nil))
+    (shutdown client-node, false)
+    this))
 
 
 
 
 (defn+opts start-client
   "Starts a client providing it with its identifying information."
-  [hostname, nodename, port | :as options]
-  (log/debugf "Client %s@%s:%s started with options: %s" nodename hostname port options)
-  (let [client-node (node/start-node hostname, nodename, port, (partial role/handle-message-checked handle-message)
-                      :user-data (create-client-data), options)]
-    (SputnikClient. client-node, nil)))
+  [hostname, port | :as options]
+  (log/debugf "Client for server %s:%s started with options: %s" hostname port options)
+  (let [message-client-atom (atom nil)
+        client-node  (ClientNode.
+                       message-client-atom,
+                       (threads/create-thread-pool options),
+                       (atom {})
+                       (atom {}),
+                       (atom nil),
+                       (atom nil)),
+        message-client (msg/create-client hostname, port,
+                         (fn handle-messages-parallel [endpoint, message]
+                           (threads/safe-execute client-node, (role/handle-message-checked handle-message, client-node, endpoint, message))),
+                         options)]
+    (reset! message-client-atom message-client)
+    (doto (SputnikClient. client-node)
+      (connect))))
+
+
+(defn merge-task-data
+  "Add task :data to finished tasks (:data is not sent back by the worker)."
+  [^SputnikClient client, finished-tasks]
+  (let [job-map (get-job-map (.client-node client))]
+    (mapv
+      (fn [{:keys [task-data] :as finished-task}]
+        (let [{:keys [job-id, task-id]} task-data,
+              task (get-in job-map [job-id, :job-data, :task-map, task-id])]
+          (assoc-in finished-task [:task-data :data] (:data task))))
+      finished-tasks)))
+
 
 
 (defmethod handle-message :role-granted
   [this-node, remote-node, {:keys [role]}]
-  (log/debugf "Server %s granted role %s." (node/node-info remote-node) role)
+  (log/debugf "Server %s granted role %s." (msg/address-str remote-node) role)
   ; notify the client that the server granted the role and is thus fully connected
   (notify-connected this-node))
 
@@ -232,7 +335,7 @@
     (report-progress (map :execution-data finished-tasks), (extract-exceptions batched?, finished-tasks)))
   (when result-callback
     (try
-      (result-callback client, (cond-> finished-tasks batched? unwrap-batched-tasks))
+      (result-callback client, (merge-task-data client, (cond-> finished-tasks batched? unwrap-batched-tasks)))
       (catch Throwable t
         (log/error (str "Exception caught when calling the result callback:\n" (with-out-str (print-cause-trace t)))))))
   (dotimes [_ (count finished-tasks)] 
@@ -262,19 +365,48 @@
 	    (.await latch)
 	    (when job-finished-callback
 	      (job-finished-callback client))
-      (job-finished client, job)))
+      (job-finished client, (:job-id job))))
 
 
 (defn result-data
   "Extracts the result data from the given list of finshed tasks."
   [finished-tasks]
-  (mapv #(get-in % [:execution-data :result-data]) finished-tasks))
+  (mapv
+    (fn [{:keys [execution-data]}]
+      (or
+        (when-let [ex (:exception execution-data)]
+          (RuntimeException. ^String ex))
+        (:result-data execution-data)))
+    finished-tasks))
+
+
+(defn find-first
+  "Find first element in collection that matches the given predicate."
+  [pred, coll]
+  (reduce
+    (fn [_, x]
+      (when (pred x)
+        (reduced x)))
+    nil
+    coll))
+
+
+(defn- deref-results
+  [rethrow, results-atom]
+  (let [results (deref results-atom)]
+    (if rethrow
+      ; then check for exception and throw the first found execption
+      (if-let [ex (find-first #(instance? Throwable %) results)]
+        (throw ex)
+        results)
+      ; else just return results unchecked
+      results)))
 
 
 (defn+opts compute-job
   "Submits the job to the client, waits until all tasks are completed and returns the results.
   <async>Specifies whether this function returns immediately (true) and returns a dereferencable value or blocks until the job was completed.</>"
-  [client, job | {async false} :as options]
+  [client, job | {async false, rethrow true} :as options]
   (let [results-atom (atom []),
         job-execution (future
                         (try
@@ -287,35 +419,33 @@
                             (log/errorf "An exception occured during the execution of job \"%s\". Details:\n%s"
                               (:job-id job), (with-out-str (print-cause-trace e)))
                             (throw e)))),
-        deref-future #'clojure.core/deref-future,
-        result-ref (reify
-                     clojure.lang.IDeref 
-                     (deref [_]
-                       (deref-future job-execution)
-                       (deref results-atom))
-                     clojure.lang.IBlockingDeref
-                     (deref [_ timeout-ms timeout-val]
-                       (let [val (deref-future job-execution timeout-ms ::timed-out)]
-                         (if (= val ::timed-out)
-                           timeout-val
-                           (deref results-atom))))
-                     clojure.lang.IPending
-                     (isRealized [_]
-                       (realized? job-execution)))]     
+        deref-future #'clojure.core/deref-future]     
     (if async
-      result-ref
-      (deref result-ref))))
+      (reify
+        clojure.lang.IDeref 
+          (deref [_]
+            (deref-future job-execution)
+            (deref-results rethrow, results-atom))
+        clojure.lang.IBlockingDeref
+          (deref [_ timeout-ms timeout-val]
+            (let [val (deref-future job-execution timeout-ms ::timed-out)]
+              (if (= val ::timed-out)
+                timeout-val
+                (deref-results rethrow, results-atom))))
+        clojure.lang.IPending
+          (isRealized [_]
+            (realized? job-execution)))
+      (do
+        (deref-future job-execution)
+        (deref-results rethrow, results-atom)))))
 
 
 (defn+opts start-automatic-client
   "Start an automatic client that executes a job. This is intended for automatically running a client remotely.
   The job is retrieved by calling the `job-setup-fn`. The automatic client exits as soon as the job is completed."
-  [hostname, nodename, port, server-hostname, server-nodename, server-port, job-setup-fn | :as options]
-  (log/infof "Automatic client started as %s@%s:%s to be connected to server %s@%s:%s.",
-    nodename, hostname, port,
-    server-nodename, server-hostname, server-port)
-  (with-open [^Closeable client (doto (start-client hostname, nodename, port, options) 
-                                  (connect server-hostname, server-nodename, server-port))]
+  [server-hostname, server-port, job-setup-fn | :as options]
+  (log/infof "Automatic client for server %s:%s started.", server-hostname, server-port)
+  (with-open [^Closeable client (start-client server-hostname, server-port, options)]
     (let [{:keys [job, result-callback, job-finished-callback]} (job-setup-fn)]
 	    (execute-job client, job,
        :result-callback result-callback,
@@ -330,15 +460,18 @@
 
 (defn additional-data
   [^SputnikClient sputnik-client]
-  (-> sputnik-client .client-node ^ClientData node/user-data .additional-data deref))
+  (let [^ClientNode client-node (.client-node sputnik-client)]
+    (-> client-node .additional-data deref)))
 
 (defn reset-additional-data
   [^SputnikClient sputnik-client, value]
-  (-> sputnik-client .client-node ^ClientData node/user-data .additional-data (reset! value)))
+  (let [^ClientNode client-node (.client-node sputnik-client)]
+    (-> client-node .additional-data (reset! value))))
 
 (defn update-additional-data
   [^SputnikClient sputnik-client, f & values]
-  (-> sputnik-client .client-node ^ClientData node/user-data .additional-data (apply swap! f values)))
+  (let [^ClientNode client-node (.client-node sputnik-client)]
+    (-> client-node .additional-data (apply swap! f values))))
 
 
 
@@ -355,7 +488,6 @@
   "Creates a client using the configuration file given by the `config-url`."
   [config-url]
   (if (fs/exists? config-url)
-    (let [{:keys [hostname, nodename, registry-port, server-hostname, server-nodename, server-registry-port] :as options} (read-client-config config-url)]
-               (doto (start-client hostname, nodename, registry-port, (->option-map options))
-                 (connect server-hostname, server-nodename, server-registry-port)))
+    (let [{:keys [server-hostname, server-port] :as options} (read-client-config config-url)]
+      (start-client server-hostname, server-port, (->option-map options)))
     (throw (java.io.FileNotFoundException. (format "Configuration file %s does not exist!" config-url)))))

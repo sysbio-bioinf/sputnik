@@ -11,7 +11,9 @@
   (:require
     [quil.core :as q]))
 
-
+; Note that the export of task durations has been removed, since the data is not collected at the server anymore
+; since the introduction of sputnik.tools.performance-data!
+; This code is still included since the task durations could be gathered at client side.
 
 (defn find-extreme-value
   [selection-fn, attribute-key, coll]

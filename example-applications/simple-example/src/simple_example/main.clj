@@ -12,6 +12,7 @@
     [clojure.tools.cli :as cli]
     [sputnik.tools.logging :as l]
     [sputnik.tools.file-system :as fs]
+    [sputnik.api :as s]
     [simple-example.core :as c]))
 
 
@@ -19,10 +20,13 @@
 (def ^:private cli-options
   [["-h" "--help" "Show help." :default false]
    ["-c" "--config URL" "URL to Sputnik client configuration file."]
-   ["-s" "--seed S" "Seed for the PRNG." :parse-fn #(Long/parseLong %) :default (System/currentTimeMillis) ]
+   ["-T" "--thread-count N" "Number of threads to use when local instead of distributed computation is used (no --config specified)" :parse-fn #(Long/parseLong %) :default 1]
+   ["-s" "--seed S" "Seed for the PRNG." :parse-fn #(Long/parseLong %) :default (System/currentTimeMillis)]
    ["-t" "--task-count T" "Number of computational tasks." :parse-fn #(Long/parseLong %) :default 1000]
    ["-p" "--point-count P" "Number of points per tasks."   :parse-fn #(Long/parseLong %) :default 100000000]
+   ["-I" "--implementation I" "Implementation to use: either \"manual\" or \"future\"." :parse-fn keyword :default :manual]
    ["-P" "--progress-report" "Specifies whether a progress report is printed." :default false]
+   ["-L" "--log-level L" "Specifies the log level." :parse-fn keyword, :default :info, :validate [#{:error, :warn, :info, :debug, :trace} "Must be one of: error, warn, info, debug, trace."]]
    [nil "--setup" "Start the Sputnik GUI to setup the Sputnik cluster." :default false]])
 
 
@@ -50,16 +54,26 @@
 
 (defn -main
   [& args]
-  (l/configure-logging :filename "client.log" :log-level :debug)
   (let [{:keys [options, arguments, summary, errors]} (cli/parse-opts args, cli-options),
-        {:keys [help, setup, config, seed, task-count, point-count, progress-report]} options]
+        {:keys [help, setup, config, seed, task-count, point-count, progress-report, thread-count, implementation, log-level]} options]
+    (l/configure-logging :filename "client.log" :log-level log-level)
     (cond
       errors (do
                (doseq [err-msg errors] (println err-msg))
                (print-help summary)
                (System/exit 1)),
       help  (do (print-help summary) (System/exit 0)),
-      setup (execute-main 'sputnik.control.gui, (rest arguments))
-      (nil? config) (print-help summary "A configuration file is needed!")
-      (not (fs/file? config)) (print-help summary (format "The given configuration filename \"%s\" does not refer to a file!" config))
-      :else (do (c/estimate-pi config, seed, task-count, point-count, progress-report) (System/exit 0)))))
+      setup (execute-main 'sputnik.control.gui, (rest arguments))      
+      (and config (not (fs/file? config))) (print-help summary (format "The given configuration filename \"%s\" does not refer to a file!" config))
+      :else (do
+              (case implementation
+                :manual (c/estimate-pi seed, task-count, point-count,
+                          :progress? progress-report
+                          :mode (if config :sputnik :parallel)
+                          :sputnik-config config
+                          :thread-count thread-count)
+                :future (s/with-sputnik {:mode (if config :sputnik :parallel)
+                                         :sputnik-config config
+                                         :thread-count thread-count}
+                          (c/estimate-pi-new seed, task-count, point-count))) 
+              (System/exit 0)))))

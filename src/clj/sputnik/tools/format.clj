@@ -7,39 +7,51 @@
 ; You must not remove this notice, or any other, from this software.
 
 (ns sputnik.tools.format
-  (:use
-    [clj-time.core :only [default-time-zone, day]]
-    [clj-time.coerce :only [from-long]]
-    [clj-time.format :only [formatter, unparse]]))
+  (:require
+    (clj-time
+      [core :as t]
+      [coerce :as c]
+      [format :as f])))
 
 
-(def ^:private datetime-formatter (formatter "dd.MM.yyyy HH:mm:ss" (default-time-zone)))
-(def ^:private duration-formatter (formatter "HH:mm:ss,SSS"))
-(def ^:private datetime-filename-formatter (formatter "yyyyMMdd-HHmmss" (default-time-zone)))
+(def ^:private datetime-formatter (f/formatter "dd.MM.yyyy HH:mm:ss" (t/default-time-zone)))
+(def ^:private datetime-filename-formatter (f/formatter "yyyyMMdd-HHmmss" (t/default-time-zone)))
 
 (defn datetime-format
   "Renders the date time given as milliseconds to a string using the following format:
   \"dd.MM.yyyy HH:mm:ss\""
-  [millis]
-  (unparse datetime-formatter (from-long (long millis))))
+  [^long millis]
+  (f/unparse datetime-formatter (c/from-long millis)))
 
-(defn duration-format
-  "Renders the duration given as milliseconds to a string using the following format:
-  \"HH:mm:ss,SSS\""
-  [millis]
-  (unparse duration-formatter (from-long (long millis))))
-
-(defn duration-with-days-format
-  "Renders the duration given as milliseconds to a string using the following format:
-  \"ddd HH:mm:ss,SSS\""
-  [millis]
-  (let [date (from-long (long millis))]
-    (str
-    (format "%03dd " (dec (day date)))
-    (unparse duration-formatter date))))
 
 (defn datetime-filename-format
   "Renders the date time given as milliseconds to a string using the following format:
   \"yyyyMMdd-HHmmss\""
-  [millis]
-  (unparse datetime-filename-formatter (from-long (long millis))))
+  [^long millis]
+  (f/unparse datetime-filename-formatter (c/from-long millis)))
+
+
+(defn duration-format
+  "Renders the duration given as milliseconds to a string using the following format:
+  \"HH:mm:ss,SSS\""
+  [^long millis]
+  (let [interval (t/interval (c/from-long 0) (c/from-long millis))]
+    (format "%02d:%02d:%02d,%03d"
+      (t/in-hours interval),
+      (mod (t/in-minutes interval) 60),
+      (mod (t/in-seconds interval) 60),
+      (mod (t/in-millis  interval) 1000))))
+
+
+(defn duration-with-days-format
+  "Renders the duration given as milliseconds to a string using the following format:
+  \"ddd HH:mm:ss,SSS\""
+  [^long millis]
+  (let [interval (t/interval (c/from-long 0) (c/from-long millis))]
+    (format "%03dd %02d:%02d:%02d,%03d"
+      (t/in-days interval)
+      (mod (t/in-hours   interval) 24),
+      (mod (t/in-minutes interval) 60),
+      (mod (t/in-seconds interval) 60),
+      (mod (t/in-millis  interval) 1000))))
+

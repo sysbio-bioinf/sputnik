@@ -6,7 +6,7 @@
 ; the terms of this license.
 ; You must not remove this notice, or any other, from this software.
 
-(ns sputnik.satellite.server.performance-data
+(ns sputnik.tools.performance-data
   (:require
     [clojure.string :as str]
     [sputnik.tools.error :as e])
@@ -525,11 +525,9 @@
 
 
 (defn create-total-task-computation-data
-  [^long bucket-time-period, ^long interval-count, ^long initial-timestamp] ; initial-timestamp is only included for interface compatibility with `create-period-task-computation-data`
-  ; one more bucket than intervals
-  (let [bucket-count (inc interval-count)]
-    (TotalTaskComputationData.
-       -1, -1, 0, 0, 0)))
+  ([] (TotalTaskComputationData. -1, -1, 0, 0, 0))
+  ([^long bucket-time-period, ^long interval-count, ^long initial-timestamp] ; for interface compatibility with `create-period-task-computation-data`
+    (create-total-task-computation-data)))
 
 
 

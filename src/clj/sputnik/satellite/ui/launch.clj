@@ -15,15 +15,16 @@
     [clojure.tools.logging :refer [errorf, infof, debugf, tracef]]
     [clojure.options :refer [defn+opts]])
   (:import
-    org.eclipse.jetty.server.Server))
+    org.eclipse.jetty.server.Server
+    org.eclipse.jetty.server.ssl.SslSelectChannelConnector))
 
 
 (defn use-only-tls
   [^Server jetty]
   (let [protocols (into-array String ["TLSv1.1" "TLSv1.2"])]
-    (doseq [con (->> jetty
-                  .getConnectors
-                  (filter #(instance? org.eclipse.jetty.server.ssl.SslSelectChannelConnector %)))]
+    (doseq [^SslSelectChannelConnector con (->> jetty
+                                             .getConnectors
+                                             (filter #(instance? SslSelectChannelConnector %)))]
       (.setIncludeProtocols (.getSslContextFactory con) protocols))))
 
 

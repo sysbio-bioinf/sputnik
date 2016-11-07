@@ -64,16 +64,16 @@
   <cpus>Number of cpus of the node which is used as default for the number of worker thread of a worker node.</>
   <user>Specifies the user that is used to log into the node.</>
   <alive-check-timeout>Timeout (in msec) after which remote nodes are checked whether they are still alive.</>
-  <registry-port>Specifies the port where the RMI registry will listen.</>
-  <node-port>Specifies the port where the node will listen. This is useful when port forwarding is needed.</>
   <log-level>Specifies the log level that is used for the node.</>
+  <log-file>Specifies the log file to use.</>
   <sputnik-jvm>Specifies the path of a custom Java Virtual Machine to use.</>
+  <sputnik-numactl>Specifies the path of a custom numactl to use (manual install).</>
   <max-log-size>Maximum size of the log file in MB.</>
   <log-backup-count>Number of log file backups to use.</>
   <custom-log-levels>Map of custom log level specifications mapping class name to log level, e.g. {:org.eclipse.jetty :info}.</>"
   [host-name, host-address | {group "default", ssh-port nil, cpus nil, user nil,
-                              alive-check-timeout 10000, registry-port 10099, node-port nil,
-                              sputnik-jvm nil,
+                              alive-check-timeout 1000, sputnik-jvm nil, sputnik-numactl nil,
+                              log-file "sputnik.log",
                               log-level (choice :info :trace, :debug, :warn, :error, :fatal),
                               max-log-size 100, log-backup-count 10, custom-log-levels {}} :as options]
   (when (not= (meta/config-type user) :sputnik/user)
@@ -81,8 +81,8 @@
   (let [node-name (some-> host-name name)]
     (meta/with-config-type :sputnik/node
 	    {:host {:name node-name, :address host-address, :id node-name, :user user, :group group, :ssh-port ssh-port},
-       :sputnik-jvm sputnik-jvm,
-	     :options (-> options (with-meta nil) (dissoc :user :group :ssh-port :sputnik-jvm) (assoc :nodename node-name, :hostname host-address))})))
+       :sputnik-jvm sputnik-jvm, :sputnik-numactl sputnik-numactl,
+	     :options (-> options (with-meta nil) (dissoc :user :group :ssh-port :sputnik-jvm :sputnik-numactl))})))
 
 (create-config-def node :sputnik/node)
 
@@ -142,22 +142,28 @@
 
 
 (defn ^:sputnik/config apply-role
-  [{:keys [options, sputnik-jvm-opts, sputnik-jvm] :as role}, node]
+  [{:keys [options, sputnik-jvm-opts, sputnik-jvm, sputnik-numactl, numa-nodes] :as role}, node]
   (-> (meta/with-config-type (meta/config-type role) node)
     (update-in [:sputnik-jvm-opts] #(or sputnik-jvm-opts %))
     (update-in [:sputnik-jvm] #(or sputnik-jvm %))
-    (update-in [:options] #(merge %, options))))
+    (update-in [:sputnik-numactl] #(or sputnik-numactl %))
+    (update-in [:options] #(merge %, options))    
+    (cond->
+      (= (meta/config-type role) :sputnik/worker)
+        (update-in [:numa-nodes] #(or numa-nodes %)))))
 
 
 (defn+opts- role
   "Creates a role configuration for a node.
   <sputnik-jvm-opts>Additional options to pass to the JVM of the sputnik process.</>
-  <sputnik-jvm>Specifies the path of a custom Java Virtual Machine to use.</>"
-  [node-type | {sputnik-jvm-opts nil, sputnik-jvm nil} :as options]
+  <sputnik-jvm>Specifies the path of a custom Java Virtual Machine to use.</>
+  <sputnik-numactl>Specifies the path of a custom numactl to use (manual install).</>"
+  [node-type | {sputnik-jvm-opts nil, sputnik-jvm nil, sputnik-numactl nil} :as options]
   (meta/with-config-type node-type
-    {:options (with-meta (dissoc options :sputnik-jvm-opts :sputnik-jvm) nil),
+    {:options (with-meta (dissoc options :sputnik-jvm-opts :sputnik-jvm :sputnik-numactl) nil),
      :sputnik-jvm-opts sputnik-jvm-opts,
-     :sputnik-jvm sputnik-jvm}))
+     :sputnik-jvm sputnik-jvm,
+     :sputnik-numactl sputnik-numactl}))
 
 
 (defn+opts ^:sputnik/config server-role
@@ -166,6 +172,8 @@
   <admin-password>Password for the admin user in the web user interface of the server.</>
   <min-port>Minimal port number for the web user interface. First unused port will be used by the web UI.</>
   <max-port>Maximal port number for the web user interface. First unused port will be used by the web UI.</>
+  <sputnik-port>The port that the Sputnik server is listening on for workers and clients.</>
+  <scheduling-strategy>Specifies the used strategy for task scheduling</>
   <scheduling-timeout>Specifies the duration of the pauses between scheduling actions.</>
   <scheduling-performance-interval-duration>Specifies the duration in milliseconds of the intervals
   in which the performance of workers and jobs is tracked. (used for scheduling decisions and UI)</>
@@ -177,8 +185,9 @@
   provided that the worker-task-selection decided to send them any tasks.</>
   <task-stealing>Specifies a function that selects already assigned tasks that are send to other workers. (No task stealing is an option as well.)</>
   <task-stealing-factor>Similar to the `max-task-count-factor` but applies only to task stealing.</>"
-  [| {admin-user nil, admin-password nil, min-ui-port 8080, max-ui-port 18080,
-      scheduling-timeout 100, max-task-count-factor 2, worker-task-selection nil, worker-ranking nil,
+  [| {admin-user nil, admin-password nil, min-ui-port 8080, max-ui-port 18080, sputnik-port 23029,
+      scheduling-timeout 100, scheduling-strategy (choice :equal-load :fastest-max-tasks),
+      max-task-count-factor 2, worker-task-selection nil, worker-ranking nil,
       task-stealing true, task-stealing-factor 2,
       scheduling-performance-interval-duration (* 1000 60 5), scheduling-performance-interval-count 12} :as options]
   (role :sputnik/server options))
@@ -188,11 +197,12 @@
 
 (defn+opts ^:sputnik/config worker-role
   "Creates a worker role.
+  <nickname>Nickname of the worker that is displayed in the web UI of the server.</>
   <send-result-timeout>Timeout (in msec) that the worker will wait for additional results before sending them back to the server.</>
   <worker-threads>Initial number of threads that are used for task execution. If not set, the number of cpus of the host will be used.</>
   <max-results-to-send>Maximum number of results that are sent at once. This allows faster responses if the result data is large.</>
   <send-results-parallel>Specifies whether the results are serialized and sent in different parallel node threads.</>"
-  [| {send-result-timeout 1000, max-results-to-send nil, send-results-parallel true, worker-threads nil} :as options]
+  [| {nickname nil, send-result-timeout 1000, max-results-to-send nil, send-results-parallel true, worker-threads nil} :as options]
   (role :sputnik/worker options))
 
 (create-config-def worker-role :sputnik/worker)
@@ -247,15 +257,15 @@
   <protocol>Name of the secure protocol to use. Details can be found in the Java API for SSL.</>
   <ssl-enabled>Specifies whether SSL shall be used.</>
   <thread-count>Number of threads that are used for communication (message processing).</>
-  <buffer-init>Initial size of the buffer used for serializing message objects.</>
-  <buffer-max>Maximum size of the buffer used for serializing message objects.</>
+  <initial-buffer>Initial size of the buffer used for serializing message objects.</>
+  <max-buffer>Maximum size of the buffer used for serializing message objects.</>
   <compressed>Specifies whether compression is used for message serialization.</>
   <no-wrap> If true then the ZLIB header and checksum fields will not be used in order to support the compression format used in both GZIP and PKZIP.</>
   <compression-level>Specifies the level of compression 0-9 with 9 for best compression.</>"
   [| {keystore "keystore.ks", keystore-password nil, 
       truststore "truststore.ks", truststore-password nil,
       protocol "TLSv1.2", ssl-enabled true,
-      thread-count 2, buffer-init nil, buffer-max nil,
+      thread-count 2, initial-buffer (* 1024 1024), max-buffer (* 128 1024 1024),
       compressed true, no-wrap true, compression-level 9} 
    :as options]
   (meta/with-config-type :sputnik/communication 

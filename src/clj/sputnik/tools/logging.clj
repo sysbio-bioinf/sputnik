@@ -20,7 +20,7 @@
   [level]
   (-> level name string/upper-case))
 
-(defn+opts logging-properties
+(defn+opts ^Properties logging-properties
   "Creates the properties map to configure the logging environment.
   <filename>Filename of the log.</>
   <level>Log level that is globally used.</>
@@ -35,9 +35,9 @@
                     (.setProperty "log4j.appender.file.MaxFileSize" (format "%sMB" max-size))
                     (.setProperty "log4j.appender.file.MaxBackupIndex" (str backup-count))
                     (.setProperty "log4j.appender.file.layout" "org.apache.log4j.PatternLayout")
-                    (.setProperty "log4j.appender.file.layout.ConversionPattern" "%d{ABSOLUTE} %5p %c: %m%n"))]
+                    (.setProperty "log4j.appender.file.layout.ConversionPattern" "%d{yyyy.MM.dd HH:mm:ss} %5p %c: %m%n"))]
     (reduce-kv
-      (fn [props, namespace, level]
+      (fn [^Properties props, namespace, level]
         (doto props
           (.setProperty (format "log4j.logger.%s" (name namespace)) (level->string level))))
       log-props
