@@ -1,5 +1,7 @@
 # Sputnik
 
+![Clojars Project](https://img.shields.io/clojars/v/sputnik.svg)
+
 Sputnik is a Clojure library for parallelization of computations to distributed computation nodes.
 Sputnik does not only handle the distribution and execution of tasks but also the configuration and deployment of the server and the workers.
 
@@ -58,10 +60,6 @@ For [Leiningen](http://leiningen.org) add the following to your dependency vecto
 ```clojure
 [sputnik "0.5.2"]
 ```
-
-Latest on [clojars.org](http://clojars.org):
-
-[![Clojars Project](https://img.shields.io/clojars/v/sputnik.svg)](https://clojars.org/sputnik)
 
 ## Documentation
 
