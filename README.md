@@ -81,6 +81,6 @@ The implementation using the [JPPF framework](http://www.jppf.org) to compare it
 
 ## License
 
-Copyright © 2014-2016 Gunnar Völkel
+Copyright © 2014-2017 Gunnar Völkel
 
 Sputnik is distributed under the Eclipse Public License.
