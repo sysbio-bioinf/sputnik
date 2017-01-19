@@ -1,6 +1,6 @@
 # Sputnik
 
-![Clojars Project](https://img.shields.io/clojars/v/sputnik.svg)
+[![Clojars Project](https://img.shields.io/clojars/v/sputnik.svg)](https://clojars.org/sputnik)
 
 Sputnik is a Clojure library for parallelization of computations to distributed computation nodes.
 Sputnik does not only handle the distribution and execution of tasks but also the configuration and deployment of the server and the workers.
