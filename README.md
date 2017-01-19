@@ -49,14 +49,14 @@ Since it supports TLSv1.1, Java 6 might be usable for Sputnik as well (but is no
 
 ## Releases
 
-The latest release is [Sputnik 0.5.1](../../releases/tag/v0.5.1).
+The latest release is [Sputnik 0.5.2](../../releases/tag/v0.5.2).
 
 ## Install
 
 For [Leiningen](http://leiningen.org) add the following to your dependency vector in your project.clj:
 
 ```clojure
-[sputnik "0.5.1"]
+[sputnik "0.5.2"]
 ```
 
 Latest on [clojars.org](http://clojars.org):

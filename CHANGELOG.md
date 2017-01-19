@@ -1,3 +1,8 @@
+# Changes from 0.5.1 to 0.5.2
+
+* Server Web UI: Ignore disconnected workers for calculations
+* Scheduling: Fix missing :capacity on unknown worker thread count
+
 # Changes from 0.4.0 to 0.5.1
 
 * Communication implemented via Netty (instead of Java RMI)

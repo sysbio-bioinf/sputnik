@@ -168,24 +168,25 @@
 
 (defn server-summary-data
   [rated-worker-coll, client-data]
-  (merge
-    {:worker-count (reduce (fn [n, {:keys [connected]}] (cond-> n connected inc)) 0 rated-worker-coll),
-     :total-performance-data
-       (pd/aggregate-performance-data (mapv :total-performance-data rated-worker-coll)),
-     :selected-period-performance-data
-       (pd/aggregate-performance-data (mapv :selected-period-performance-data rated-worker-coll)),
-     :thread-count (reduce
-                     (fn [n, worker]
-                       (cond-> n (:connected worker) (+ (:thread-count worker))))
-                     0
-                     rated-worker-coll)
-     :client-count (count client-data)}
-    ; client attribute calculation unchanged (18.11.2014) because it is not performance critical
-    (aggregate-properties client-data, "total-"
-      [:task-count nil maybe-add],
-      [:finished-task-count nil maybe-add],
-      [:job-count nil maybe-add]
-      [:exception-count 0 +])))
+  (let [connected-rated-workers (filter :connected rated-worker-coll)]
+    (merge
+      {:worker-count (count connected-rated-workers),
+       :total-performance-data
+       (pd/aggregate-performance-data (mapv :total-performance-data connected-rated-workers)),
+       :selected-period-performance-data
+       (pd/aggregate-performance-data (mapv :selected-period-performance-data connected-rated-workers)),
+       :thread-count (reduce
+                       (fn [n, worker]
+                         (+ n (:thread-count worker)))
+                       0
+                       connected-rated-workers)
+       :client-count (count client-data)}
+      ; client attribute calculation unchanged (18.11.2014) because it is not performance critical
+      (aggregate-properties client-data, "total-"
+        [:task-count nil maybe-add],
+        [:finished-task-count nil maybe-add],
+        [:job-count nil maybe-add]
+        [:exception-count 0 +]))))
 
 
 (defn jobs-progress-data

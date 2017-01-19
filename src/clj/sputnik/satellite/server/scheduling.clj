@@ -54,7 +54,7 @@
         ; if no thread-count is known
         (do
           (log/warnf "Could not determine number of new tasks for worker %s because its thread count is unknown." worker-info)
-          (assoc worker :max-task-count 0, :new-task-count 0))))
+          (assoc worker :max-task-count 0, :capacity 0, :new-task-count 0))))
     rated-worker-vec))
 
 
