@@ -1,3 +1,7 @@
+# Changes from 0.5.2 to 0.5.3
+
+* Messaging Client: Fix try-connect error handling to retry on all exceptions.
+
 # Changes from 0.5.1 to 0.5.2
 
 * Server Web UI: Ignore disconnected workers for calculations

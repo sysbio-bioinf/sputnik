@@ -244,7 +244,7 @@
   [bootstrap, server-address, server-port]
   (try
     (netty/connect-client bootstrap, server-address, server-port)
-    (catch java.net.ConnectException t
+    (catch Throwable t
       (log/tracef "Reconnecting to %s:%s failed due to: %s" server-address, server-port, (.getMessage t))
       nil)))
 
