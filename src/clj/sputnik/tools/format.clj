@@ -31,27 +31,35 @@
   (f/unparse datetime-filename-formatter (c/from-long millis)))
 
 
+(defn duration-data
+  [^long duration-in-millis]
+  (let [milliseconds (mod duration-in-millis 1000),
+        duration-in-secs (quot duration-in-millis 1000),
+        seconds (mod duration-in-secs 60),
+        duration-in-mins (quot duration-in-secs 60),
+        minutes (mod duration-in-mins 60),
+        duration-in-hours (quot duration-in-mins 60),
+        hours (mod duration-in-hours 24),
+        days (quot duration-in-hours 24)]
+    {:milliseconds milliseconds,
+     :seconds seconds,
+     :minutes minutes,
+     :hours hours,
+     :days days}))
+
+
 (defn duration-format
   "Renders the duration given as milliseconds to a string using the following format:
   \"HH:mm:ss,SSS\""
-  [^long millis]
-  (let [interval (t/interval (c/from-long 0) (c/from-long millis))]
-    (format "%02d:%02d:%02d,%03d"
-      (t/in-hours interval),
-      (mod (t/in-minutes interval) 60),
-      (mod (t/in-seconds interval) 60),
-      (mod (t/in-millis  interval) 1000))))
+  [^long duration-in-millis]
+  (let [{:keys [hours, minutes, seconds, milliseconds]} (duration-data duration-in-millis)]
+    (format "%02d:%02d:%02d,%03d" hours, minutes, seconds, milliseconds)))
 
 
 (defn duration-with-days-format
   "Renders the duration given as milliseconds to a string using the following format:
   \"ddd HH:mm:ss,SSS\""
-  [^long millis]
-  (let [interval (t/interval (c/from-long 0) (c/from-long millis))]
-    (format "%03dd %02d:%02d:%02d,%03d"
-      (t/in-days interval)
-      (mod (t/in-hours   interval) 24),
-      (mod (t/in-minutes interval) 60),
-      (mod (t/in-seconds interval) 60),
-      (mod (t/in-millis  interval) 1000))))
+  [^long duration-in-millis]
+  (let [{:keys [days, hours, minutes, seconds, milliseconds]} (duration-data duration-in-millis)]
+    (format "%03dd %02d:%02d:%02d,%03d" days, hours, minutes, seconds, milliseconds)))
 

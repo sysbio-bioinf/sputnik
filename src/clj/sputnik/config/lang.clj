@@ -81,8 +81,7 @@
   (let [node-name (some-> host-name name)]
     (meta/with-config-type :sputnik/node
 	    {:host {:name node-name, :address host-address, :id node-name, :user user, :group group, :ssh-port ssh-port},
-       :sputnik-jvm sputnik-jvm, :sputnik-numactl sputnik-numactl,
-	     :options (-> options (with-meta nil) (dissoc :user :group :ssh-port :sputnik-jvm :sputnik-numactl))})))
+	     :options (-> options (with-meta nil) (dissoc :user :group :ssh-port))})))
 
 (create-config-def node :sputnik/node)
 
@@ -142,15 +141,9 @@
 
 
 (defn ^:sputnik/config apply-role
-  [{:keys [options, sputnik-jvm-opts, sputnik-jvm, sputnik-numactl, numa-nodes] :as role}, node]
+  [{:keys [options] :as role}, node]
   (-> (meta/with-config-type (meta/config-type role) node)
-    (update-in [:sputnik-jvm-opts] #(or sputnik-jvm-opts %))
-    (update-in [:sputnik-jvm] #(or sputnik-jvm %))
-    (update-in [:sputnik-numactl] #(or sputnik-numactl %))
-    (update-in [:options] #(merge %, options))    
-    (cond->
-      (= (meta/config-type role) :sputnik/worker)
-        (update-in [:numa-nodes] #(or numa-nodes %)))))
+    (update-in [:options] #(merge-with (fn [x, y] (or y x)) %, options))))
 
 
 (defn+opts- role
@@ -160,10 +153,7 @@
   <sputnik-numactl>Specifies the path of a custom numactl to use (manual install).</>"
   [node-type | {sputnik-jvm-opts nil, sputnik-jvm nil, sputnik-numactl nil} :as options]
   (meta/with-config-type node-type
-    {:options (with-meta (dissoc options :sputnik-jvm-opts :sputnik-jvm :sputnik-numactl) nil),
-     :sputnik-jvm-opts sputnik-jvm-opts,
-     :sputnik-jvm sputnik-jvm,
-     :sputnik-numactl sputnik-numactl}))
+    {:options (with-meta options nil)}))
 
 
 (defn+opts ^:sputnik/config server-role

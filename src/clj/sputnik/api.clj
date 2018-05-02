@@ -67,10 +67,10 @@
 
 
 
-(deftype LocalExecutionClient [^ExecutorService thread-pool-executor] 
-  
+(deftype LocalExecutionClient [^ExecutorService thread-pool-executor]
+
   client/ISputnikClient
-  
+
   (submit-job [this, job-data, result-callback-fn]
     ; siwtch between multi-threaded with thread pool and single-threaded with direct execution
     (if thread-pool-executor
@@ -81,13 +81,17 @@
           (.execute thread-pool-executor
             (^:once fn* []
               (clojure.lang.Var/resetThreadBindingFrame frame)
-              (result-callback-fn this, (vector (worker/start-execution nil, task))))))) ; nil instead of a node
+              (result-callback-fn this,
+                (vector
+                  (-> (worker/start-execution nil, task)
+                    ; add task data
+                    (assoc-in [:task-data :data] (:data task))))))))) ; nil instead of a node
       (doseq [task (:tasks job-data)]
         (result-callback-fn this, (vector (worker/start-execution nil, task)))))
     nil)
-  
+
   (job-finished [this, job-data] #_nothingtodo)
-  
+
   Closeable
   (close [this]
     (when thread-pool-executor
@@ -112,8 +116,8 @@
   <thread-count>Specifies the number of threads to use when local parallel execution is used</>"
   [| {mode (choice :sputnik, :parallel, :sequential), sputnik-config nil, thread-count 2}]
   (case mode
-    :sputnik    (create-client-from-config sputnik-config),
-    :parallel   (create-local-execution-client :thread-count thread-count),
+    :sputnik (create-client-from-config sputnik-config),
+    :parallel (create-local-execution-client :thread-count thread-count),
     :sequential (LocalExecutionClient. nil)))
 
 

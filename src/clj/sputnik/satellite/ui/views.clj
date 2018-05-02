@@ -165,7 +165,7 @@
 	     (transient {}))
 	   persistent!)))
 
-
+; TODO: total performance data should be based on job performance data not worker performance data for TOTAL DURATION and related properties.
 (defn server-summary-data
   [rated-worker-coll, client-data]
   (let [connected-rated-workers (filter :connected rated-worker-coll)]

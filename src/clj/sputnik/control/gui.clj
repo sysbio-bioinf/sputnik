@@ -36,19 +36,19 @@
 
 (def ^:private node-display-properties
   ^{:config-type :sputnik/node}
-  {:host-name       {:order 1, :path [:host :name],            :type :string, :additional-paths [[:sputnik/config-id]],
+  {:host-name       {:order 1, :path [:host :name],                :type :string, :additional-paths [[:sputnik/config-id]],
                      :caption "Host name"},
-   :host-address    {:order 2, :path [:host :address],         :type :string, :additional-paths [[:options :hostname]],
+   :host-address    {:order 2, :path [:host :address],             :type :string, :additional-paths [[:options :hostname]],
                      :caption "Host address"},
-   :user            {:order 3, :path [:host :user :username],  :type :string,
+   :user            {:order 3, :path [:host :user :username],      :type :string,
                      :caption "User account"},
-   :ssh-port        {:order 4, :path [:host :ssh-port],        :type :int,
+   :ssh-port        {:order 4, :path [:host :ssh-port],            :type :int,
                      :caption "SSH port"},
-   :cpus            {:order 5, :path [:options :cpus],         :type :int,
+   :cpus            {:order 5, :path [:options :cpus],             :type :int,
                      :caption "Number of available CPUs"},
-   :sputnik-jvm     {:order 6, :path [:sputnik-jvm],           :type :string,
+   :sputnik-jvm     {:order 6, :path [:options :sputnik-jvm],      :type :string,
                      :caption "Custom Sputnik JVM"},
-   :sputnik-numactl {:order 7, :path [:sputnik-numactl],       :type :string,
+   :sputnik-numactl {:order 7, :path [:options :sputnik-numactl],  :type :string,
                      :caption "Custom Sputnik numactl"}})
 
 
@@ -118,7 +118,7 @@
       :caption "Maximum Web UI HTTP port"},
    :sputnik-jvm-opts
      {:order 8,
-      :path [:sputnik-jvm-opts],
+      :path [:options :sputnik-jvm-opts],
       :type :string,
       :caption "JVM options"},
    :log-level
@@ -190,15 +190,20 @@
    :worker-node         {:order 2, :path [:sputnik/role-node],            :type :string,
                          :caption "Worker node",
                          :choice (partial select-node-configs :sputnik/node)},
-   :numa-nodes          {:order 3, :path [:numa-nodes],                   :type :int,
+   :numa-nodes          {:order 3, :path [:options :numa-nodes],          :type :int,
                          :caption "Number of NUMA nodes"},
    :worker-threads      {:order 4, :path [:options :worker-threads],      :type :int,
                          :caption "Worker threads (per NUMA node)"},
-   :send-result-timeout {:order 5, :path [:options :send-result-timeout], :type :int,
+   :single-processes?   {:order 5,
+                         :path [:options :single-processes?],
+                         :type :bool,
+                         :caption "Single Process per Thread",
+                         :choice [false true]}
+   :send-result-timeout {:order 6, :path [:options :send-result-timeout], :type :int,
                           :caption "Send results timeout (ms)"},
-   :sputnik-jvm-opts    {:order 6, :path [:sputnik-jvm-opts],             :type :string,
+   :sputnik-jvm-opts    {:order 7, :path [:options :sputnik-jvm-opts],    :type :string,
                          :caption "JVM options"},
-   :log-level           {:order 7, :path [:options :log-level],           :type :keyword,
+   :log-level           {:order 8, :path [:options :log-level],           :type :keyword,
                          :caption "Logging level",
                          :choice ["info", "trace", "debug", "warn", "error", "fatal"]}})
 
@@ -214,6 +219,7 @@
          {:key :worker-node,         :text "Node"}
          {:key :numa-nodes,          :text "#NUMA"}
          {:key :worker-threads,      :text "#Threads"}
+         {:key :single-processes?,   :text "Processes?"}
          {:key :send-result-timeout, :text "Send result timeout"}
          {:key :sputnik-jvm-opts,    :text "JVM options"}
          {:key :log-level,           :text "Log level"}]])))
@@ -382,9 +388,9 @@
                         :task-stealing true
                         :task-stealing-factor 2}},
       :sputnik/worker {:sputnik/config-id "worker",
-                       :numa-nodes 1,
                        :options
-                       {:send-result-timeout 100}})))
+                       {:send-result-timeout 100,
+                        :numa-nodes 1,}})))
 
 
 (defn deep-merge
@@ -458,10 +464,31 @@
       (rest comm-configs))))
 
 
+(defn move-attributes-to-options
+  [config-map]
+  (let [attributes [:sputnik-jvm, :sputnik-jvm-opts, :sputnik-numactl, :numa-nodes]]
+    (persistent!
+      (reduce-kv
+        (fn [config-map, k, attribute-map]
+          (assoc! config-map k (reduce
+                                 (fn [attribute-map, attr]
+                                   (cond-> attribute-map
+                                     (and
+                                       (contains? attribute-map attr)
+                                       (not (contains? (:options attribute-map) attr)))
+                                     (->
+                                       (dissoc attr)
+                                       (assoc-in [:options, attr] (get attribute-map attr)))))
+                                 attribute-map
+                                 attributes)))
+        (transient {})
+        config-map))))
+
+
 (defn load-config
   [frame, data-map-atom]
   (when-let [file (choose-file frame, :open)]
-    (let [config (process-config (cfg/load-config file, :add-config-id true))]
+    (let [config (move-attributes-to-options (process-config (cfg/load-config file, :add-config-id true)))]
       (reset! data-map-atom config))))
 
 

@@ -130,6 +130,9 @@
 
   :node (config-level :sputnik
           (config-level :node
+            (option :sputnik-jvm)
+            (option :sputnik-numactl)
+            (option :sputnik-jvm-opts)
             (option :cpus)
             (option :alive-check-timeout)
             (config-level :server
@@ -189,6 +192,8 @@
   :sputnik/worker (config-level :sputnik
                     (config-level :worker
                       (option :nickname)
+                      (option :numa-nodes)
+                      (option :single-processes?)
                       (option :numa-id)
                       (option :thread-count, :worker-threads)
                       (option :send-result-timeout)

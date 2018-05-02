@@ -61,12 +61,15 @@
 (defn create-config-file-in-directory
   [node, directory]
   (let [url (io/file directory (properties-url node))]
-    (create-config-file 
-      (assoc-in node [:options :sputnik :logging :file] (str (node-name node) "-" (node-type-name node) ".log")) 
+    (create-config-file
+      (-> node
+        (assoc-in [:options :sputnik :logging :file] (str (node-name node) "-" (node-type-name node) ".log"))
+        (cond->
+          (= (meta/config-type node) :sputnik/worker)
+          (assoc-in [:options :sputnik :worker :nickname] (node-name node))))
       url)
     ; return url of properties file
     url))
-
 
 
 (defn create-configuration-files
@@ -76,30 +79,6 @@
 	(create-config-file-in-directory client, directory)
   (doseq [w workers]
     (create-config-file-in-directory w, directory)))
-
-
-(defn numa-worker-properties-url
-  "Creates the url of the properties file for the given node."
-  [node, numa-id]
-  (format (properties-url-map (meta/config-type node)) (str (node-name node) "-NUMA-" numa-id)))
-
-
-(defn create-worker-config-file
-  [{:keys [numa-nodes] :as worker}, directory]
-  (let [numa? (and numa-nodes (> numa-nodes 1))]
-    (if numa?
-      (dotimes [numa-id numa-nodes]
-        (let [url (io/file directory (numa-worker-properties-url worker, numa-id))]
-           (create-config-file
-             (-> worker
-               (update-in [:options :sputnik :worker] assoc :nickname (node-name worker) :numa-id numa-id)
-               (assoc-in [:options :sputnik :logging :file] (str (node-name worker) "-NUMA-" numa-id "-worker.log")))
-             url)))
-      (create-config-file
-        (-> worker
-          (assoc-in [:options :sputnik :worker :nickname] (node-name worker))
-          (assoc-in [:options :sputnik :logging :file] (str (node-name worker) "-worker.log"))),
-        (io/file directory, (properties-url worker))))))
 
 
 (defn copy-payload-files
@@ -129,9 +108,7 @@
   (fs/delete-directory directory)
   (let [payload-dir (fs/create-directory directory)]
     (doseq [node node-list]
-      (if (= (meta/config-type node) :sputnik/worker)
-        (create-worker-config-file node, payload-dir)
-        (create-config-file-in-directory node, payload-dir)))
+      (create-config-file-in-directory node, payload-dir))
     ; copy files (only) to the payload-directory
     (copy-payload-files (filter #(fs/file? (:url %)) payload-list), payload-dir)))
 
@@ -186,38 +163,27 @@
   [node]
   (str (node-name node) "-" (node-type-name node)))
 
+
 (defn node-startup-command
   [node, config-file]
-  (format "-t %s %s" (node-type-name node), config-file))
+  (let [node-type (node-type-name node)]
+    (format "-t %s %s"
+      (if (= node-type "worker") "worker-launch" node-type),
+      config-file)))
 
 
 (defn java-command
   [node, payload-list, payload-directory]
   (let [worker? (= (meta/config-type node) :sputnik/worker),
-        {:keys [numa-nodes]} node,
-        numa? (and numa-nodes (> numa-nodes 1))]
-    (if (and worker? numa?)
-      (->> (range numa-nodes)
-        (mapv
-          (fn [numa-id]
-            (format "nohup %s --cpunodebind=%s --membind=%s %s -cp %s %s sputnik.satellite.run %s 2>&1 > %s-worker.out &"
-              (or (:sputnik-numactl node) "numactl")
-              numa-id,
-              numa-id,
-              (or (:sputnik-jvm node) "java")
-              (classpath (meta/config-type node), payload-list),
-              (or (:sputnik-jvm-opts node) ""),
-              (node-startup-command node, (numa-worker-properties-url node, numa-id)),
-              ; out.log prefix
-              (str (node-name node) "-NUMA-" numa-id))))
-        (str/join "\n"))
-      (format "nohup %s -cp %s %s sputnik.satellite.run %s 2>&1 > %s.out &"
-        (or (:sputnik-jvm node) "java")
-        (classpath (meta/config-type node), payload-list),
-        (or (:sputnik-jvm-opts node) ""),
-        (node-startup-command node, (properties-url node)),
-        ; out.log prefix
-        (log-prefix node)))))
+        {:keys [sputnik-jvm, sputnik-jvm-opts]} (get-in node [:options, :sputnik, :node])]
+    (format "nohup %s -cp %s %s sputnik.satellite.run %s 2>&1 > %s.out &"
+      (or sputnik-jvm "java")
+      (classpath (meta/config-type node), payload-list),
+      ; worker-launch only needs a little memory
+      (or (if worker? "-Xms100M -Xmx100M" sputnik-jvm-opts) ""),
+      (node-startup-command node, (properties-url node)),
+      ; out.log prefix
+      (log-prefix node))))
 
 
 (defn escape-double-quotes

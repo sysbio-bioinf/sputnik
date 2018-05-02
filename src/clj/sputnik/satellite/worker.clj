@@ -234,9 +234,10 @@
 
 
 (defn node-name
-  [nickname, numa-id]
+  [nickname, numa-id, cpu-id]
   (cond-> (or nickname (hostname))
-    numa-id (str "-NUMA-" numa-id)))
+    numa-id (str "-NUMA-NODE-" numa-id)
+    cpu-id  (str "-NUMA-CPU-" cpu-id)))
 
 
 (defonce ^:private ^:const worker-id-filename-fmt "%s-worker.id")
@@ -253,13 +254,13 @@
 
 
 (defn+opts start-worker
-  [server-hostname, server-port | {worker-thread-count nil, nickname nil, numa-id nil} :as options]
+  [server-hostname, server-port | {worker-thread-count nil, nickname nil, numa-id nil, cpu-id nil} :as options]
   (log/debugf "Worker started with options: %s", options)
   (log/debugf "Remote server is %s:%s", server-hostname, server-port)
   (println (format "Worker starts. Corresponding server is %s:%s.", server-hostname, server-port))
   (let [thread-count (or worker-thread-count (.availableProcessors (Runtime/getRuntime))),
         message-client-atom (atom nil),
-        nickname (node-name nickname, numa-id)
+        nickname (node-name nickname, numa-id, cpu-id)
         worker-node (WorkerNode. 
                       ; message client
                       message-client-atom                      
@@ -307,6 +308,7 @@
 (defmethod handle-message :role-granted
   [this-node, remote-node, {:keys [role]}]
   (log/debugf "Server %s granted role %s." (msg/address-str remote-node) role)
+  ; TODO: unique-id is not stored in worker node for reconnect attempts (reconnect with same id works currently only in new processes)
   ; request worker-id for reconnection (on error)
   (msg/send-message remote-node (protocol/worker-id-request-message (nickname this-node), (prev-unique-id this-node)))
   ; :worker role was granted, now send worker-thread-info

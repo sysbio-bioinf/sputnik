@@ -28,8 +28,8 @@
 
 
 
-(defn select-message-handler 
-  [this-node, remote-node, msg] 
+(defn select-message-handler
+  [this-node, remote-node, msg]
   (type msg))
 
 
@@ -44,7 +44,7 @@
 
 (defmethod handle-message :error
   [this-node, remote-node, msg]
-  (let [{:keys [kind reason message]} msg] 
+  (let [{:keys [kind reason message]} msg]
     (log/errorf "Error from %s (type = %s reason = %s): %s" (msg/address-str remote-node), kind, reason, message)))
 
 
@@ -61,39 +61,39 @@
 ; job-registry:
 ;  job: {:job-id int, :job-data data, :result-callback function}
 (deftype ClientNode [message-client-atom, thread-pool, role-map-atom, job-registry, connected-promise-atom, additional-data]
-  
+
   IClientNode
-  
+
   (server-endpoint [this]
     (deref message-client-atom))
-  
-  (shutdown [this, now?]    
+
+  (shutdown [this, now?]
     (threads/shutdown-thread-pool thread-pool, now?)
     (disconnect this))
-  
+
   IConnectable
-  
+
   (connect [this]
     (when-let [message-client (deref message-client-atom)]
       (if (msg/connect message-client)
         this
         (throw (Exception. (format "Failed to connecto to %s." (msg/address-str message-client)))))))
-  
+
   (disconnect [this]
     (when-let [message-client (deref message-client-atom)]
       (msg/disconnect message-client)))
-  
+
   role/IRoleStorage
-  
+
   (role! [this, remote-node, role]
     (role/set-role* role-map-atom, remote-node, role)
     this)
-  
+
   (role [this, remote-node]
     (role/get-role* role-map-atom, remote-node))
-  
+
   threads/IExecutor
- 
+
   (execute [this, action]
     (threads/submit-action thread-pool, action)))
 
@@ -115,7 +115,7 @@
 (defn register-job
   [^ClientNode client-node, job-data, result-callback-fn]
   (if-let [job-id (:job-id job-data)]
-    (let [job-reg (.job-registry client-node)] 
+    (let [job-reg (.job-registry client-node)]
       (if (contains? @job-reg job-id)
         (throw (IllegalArgumentException. (format "The :job-id %s is already used!" job-id)))
         (do
@@ -149,7 +149,7 @@
 
 (defn setup-connected-sync
   [^ClientNode client-node]
-  (let [connected-promise (promise)] 
+  (let [connected-promise (promise)]
     (-> client-node .connected-promise-atom (reset! connected-promise))
     connected-promise))
 
@@ -165,37 +165,37 @@
 
 
 (deftype SputnikClient [client-node]
-  
+
   IConnectable
-  
+
   (connect [this]
     (let [server-endpoint (server-endpoint client-node)]
       (log/debugf "SputnikClient tries to connect to server %s ..." (msg/address-str server-endpoint))
       (connect client-node)
       (log/debugf "SputnikClient connected to server %s" (msg/address-str server-endpoint))
       (let [sync-promise (setup-connected-sync client-node)]
-        (msg/send-message server-endpoint (role/role-request-message :client))  
+        (msg/send-message server-endpoint (role/role-request-message :client))
         @sync-promise))
     this)
-  
+
   (disconnect [this]
     (disconnect client-node)
     this)
-  
+
   ISputnikClient
-  
+
   (submit-job [this, job-data, result-callback-fn]
     (register-job client-node, job-data, (partial result-callback-fn this))
     (log/tracef "Sending job data to server %s:\n%s" (server-endpoint client-node) (with-out-str (pprint job-data)))
     (msg/send-message (server-endpoint client-node) (protocol/job-submission-message job-data))
     this)
-  
+
   (job-finished [this, job-id]
     (remove-job client-node, job-id)
     this)
-  
+
   Closeable
-  
+
   (close [this]
     (shutdown client-node, false)
     this))
@@ -208,13 +208,13 @@
   [hostname, port | :as options]
   (log/debugf "Client for server %s:%s started with options: %s" hostname port options)
   (let [message-client-atom (atom nil)
-        client-node  (ClientNode.
-                       message-client-atom,
-                       (threads/create-thread-pool options),
-                       (atom {})
-                       (atom {}),
-                       (atom nil),
-                       (atom nil)),
+        client-node (ClientNode.
+                      message-client-atom,
+                      (threads/create-thread-pool options),
+                      (atom {})
+                      (atom {}),
+                      (atom nil),
+                      (atom nil)),
         message-client (msg/create-client hostname, port,
                          (fn handle-messages-parallel [endpoint, message]
                            (threads/safe-execute client-node, (role/handle-message-checked handle-message, client-node, endpoint, message))),
@@ -226,14 +226,17 @@
 
 (defn merge-task-data
   "Add task :data to finished tasks (:data is not sent back by the worker)."
-  [^SputnikClient client, finished-tasks]
-  (let [job-map (get-job-map (.client-node client))]
-    (mapv
-      (fn [{:keys [task-data] :as finished-task}]
-        (let [{:keys [job-id, task-id]} task-data,
-              task (get-in job-map [job-id, :job-data, :task-map, task-id])]
-          (assoc-in finished-task [:task-data :data] (:data task))))
-      finished-tasks)))
+  [client, finished-tasks]
+  ; only needed for the true SputnikClient
+  (if (instance? SputnikClient client)
+    (let [job-map (get-job-map (.client-node ^SputnikClient client))]
+      (mapv
+        (fn [{:keys [task-data] :as finished-task}]
+          (let [{:keys [job-id, task-id]} task-data,
+                task (get-in job-map [job-id, :job-data, :task-map, task-id])]
+            (assoc-in finished-task [:task-data :data] (:data task))))
+        finished-tasks))
+    finished-tasks))
 
 
 
@@ -246,8 +249,8 @@
 
 (defmethod handle-message :tasks-completed
   [this-node, remote-node, {:keys [finished-tasks]}]
-  (let [job-group (group-by (comp :job-id :task-data) finished-tasks)] 
-    (doseq [[job-id finished-tasks] job-group] 
+  (let [job-group (group-by (comp :job-id :task-data) finished-tasks)]
+    (doseq [[job-id finished-tasks] job-group]
       (when-let [result-callback (get-job-result-callback this-node, job-id)]
         (result-callback finished-tasks)))))
 
@@ -266,7 +269,7 @@
       (let [msg (format
                   "Some tasks of job \"%s\" have %s task ids. All task ids are replaced. Either fix the task ids or do not rely on the task ids for further processing.%s"
                   (:job-id job)
-                  (cond 
+                  (cond
                     (and duplicate-map missing-task-ids?) "no or duplicate"
                     duplicate-map "duplicate"
                     missing-task-ids? "no")
@@ -281,9 +284,9 @@
         (println "\nERROR:\n" msg "\n")))
     (cond-> job
       (or duplicate-map missing-task-ids?)
-        (assoc :tasks (mapv (fn [id, task] (assoc task :task-id id)) (range 1 (inc (count tasks))) tasks))
+      (assoc :tasks (mapv (fn [id, task] (assoc task :task-id id)) (range 1 (inc (count tasks))) tasks))
       missing-job-id?
-        (assoc :job-id job-id))))
+      (assoc :job-id job-id))))
 
 
 (defn create-batched-job
@@ -338,7 +341,7 @@
       (result-callback client, (merge-task-data client, (cond-> finished-tasks batched? unwrap-batched-tasks)))
       (catch Throwable t
         (log/error (str "Exception caught when calling the result callback:\n" (with-out-str (print-cause-trace t)))))))
-  (dotimes [_ (count finished-tasks)] 
+  (dotimes [_ (count finished-tasks)]
     (count-down)))
 
 
@@ -355,17 +358,17 @@
               batch-size (create-batched-job batch-size)),
         task-count (count (:tasks job)),
         latch (CountDownLatch. task-count)]
-	    (log/infof "Starting a job with %s tasks." task-count)    
-	    (submit-job client, job, 
-	      (partial progress-callback
-          (boolean batch-size),
-	        (progress/create-progress-report task-count, options), 
-	        result-callback,
-	        #(.countDown latch)))
-	    (.await latch)
-	    (when job-finished-callback
-	      (job-finished-callback client))
-      (job-finished client, (:job-id job))))
+    (log/infof "Starting a job with %s tasks." task-count)
+    (submit-job client, job,
+      (partial progress-callback
+        (boolean batch-size),
+        (progress/create-progress-report task-count, options),
+        result-callback,
+        #(.countDown latch)))
+    (.await latch)
+    (when job-finished-callback
+      (job-finished-callback client))
+    (job-finished client, (:job-id job))))
 
 
 (defn result-data
@@ -419,22 +422,22 @@
                             (log/errorf "An exception occured during the execution of job \"%s\". Details:\n%s"
                               (:job-id job), (with-out-str (print-cause-trace e)))
                             (throw e)))),
-        deref-future #'clojure.core/deref-future]     
+        deref-future #'clojure.core/deref-future]
     (if async
       (reify
-        clojure.lang.IDeref 
-          (deref [_]
-            (deref-future job-execution)
-            (deref-results rethrow, results-atom))
+        clojure.lang.IDeref
+        (deref [_]
+          (deref-future job-execution)
+          (deref-results rethrow, results-atom))
         clojure.lang.IBlockingDeref
-          (deref [_ timeout-ms timeout-val]
-            (let [val (deref-future job-execution timeout-ms ::timed-out)]
-              (if (= val ::timed-out)
-                timeout-val
-                (deref-results rethrow, results-atom))))
+        (deref [_ timeout-ms timeout-val]
+          (let [val (deref-future job-execution timeout-ms ::timed-out)]
+            (if (= val ::timed-out)
+              timeout-val
+              (deref-results rethrow, results-atom))))
         clojure.lang.IPending
-          (isRealized [_]
-            (realized? job-execution)))
+        (isRealized [_]
+          (realized? job-execution)))
       (do
         (deref-future job-execution)
         (deref-results rethrow, results-atom)))))
@@ -447,10 +450,10 @@
   (log/infof "Automatic client for server %s:%s started.", server-hostname, server-port)
   (with-open [^Closeable client (start-client server-hostname, server-port, options)]
     (let [{:keys [job, result-callback, job-finished-callback]} (job-setup-fn)]
-	    (execute-job client, job,
-       :result-callback result-callback,
-       :job-finished-callback job-finished-callback,
-       options))))
+      (execute-job client, job,
+        :result-callback result-callback,
+        :job-finished-callback job-finished-callback,
+        options))))
 
 
 (defn test-result-callback
